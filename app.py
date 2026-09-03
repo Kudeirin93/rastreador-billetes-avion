@@ -29,9 +29,8 @@ def obtener_info_cuenta(api_key):
     except:
         return None, None
 
-# --- CÁLCULO DE DISTANCIAS Y AEROPUERTOS CERCANOS ---
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371.0 # Radio de la Tierra en km
+    R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
     a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
@@ -40,19 +39,18 @@ def haversine(lat1, lon1, lat2, lon2):
 def obtener_lista_aeropuertos(iata_base, radio_km):
     iata_base = iata_base.upper()
     if iata_base not in airports:
-        return iata_base # Si no lo encuentra, devuelve el original
+        return iata_base
         
     lat_base = airports[iata_base]['lat']
     lon_base = airports[iata_base]['lon']
     
     cercanos = []
     for iata, info in airports.items():
-        if len(iata) == 3: # Asegurar que es un código IATA válido
+        if len(iata) == 3:
             dist = haversine(lat_base, lon_base, info['lat'], info['lon'])
             if dist <= radio_km:
                 cercanos.append((iata, dist))
                 
-    # Ordenar por distancia y limitar a los 5 más cercanos para no saturar la API de Google
     cercanos.sort(key=lambda x: x[1])
     lista_final = [c[0] for c in cercanos[:5]]
     return ",".join(lista_final)
@@ -77,6 +75,11 @@ page_bg_img = """
 [data-testid="stStatusWidget"] {
     margin-top: -10px;
 }
+/* Estrechar márgenes nativos de la métrica */
+[data-testid="stMetric"] {
+    padding-top: 0.5rem !important;
+    padding-bottom: 0rem !important;
+}
 </style>
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)
@@ -88,20 +91,28 @@ origen = st.sidebar.text_input("Origen (IATA)", value="MAD").upper()
 destino = st.sidebar.text_input("Destino (IATA)", value="BER").upper()
 
 hoy = datetime.date.today()
-
 fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=hoy)
 buscar_vuelta = st.sidebar.checkbox("Añadir vuelo de vuelta")
 
 if buscar_vuelta:
     fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta", min_value=fecha_ida, value=fecha_ida)
 
-# Selector de aeropuertos cercanos
-buscar_cercanos = st.sidebar.checkbox("Incluir aeropuertos cercanos", value=False)
-if buscar_cercanos:
-    radio_km = st.sidebar.slider("Radio de búsqueda (km)", min_value=50, max_value=300, value=100, step=10)
-else:
-    radio_km = 0
+st.sidebar.markdown("---")
+st.sidebar.subheader("🌍 Aeropuertos Cercanos")
 
+buscar_cercanos_origen = st.sidebar.checkbox("Incluir aeropuertos cercanos de salida", value=False)
+if buscar_cercanos_origen:
+    radio_km_origen = st.sidebar.slider("Radio de salida (km)", min_value=50, max_value=600, value=100, step=10)
+else:
+    radio_km_origen = 0
+
+buscar_cercanos_destino = st.sidebar.checkbox("Incluir aeropuertos cercanos de llegada", value=False)
+if buscar_cercanos_destino:
+    radio_km_destino = st.sidebar.slider("Radio de llegada (km)", min_value=50, max_value=600, value=100, step=10)
+else:
+    radio_km_destino = 0
+
+st.sidebar.markdown("---")
 vuelo_directo = st.sidebar.checkbox("Vuelo Directo (Sin escalas)", value=False)
 mostrar_tendencia = st.sidebar.checkbox("Mostrar tendencia de precios", value=False)
 buscar_btn = st.sidebar.button("Buscar vuelos", type="primary", use_container_width=True)
@@ -123,13 +134,12 @@ try:
     total_creditos, creditos_restantes = obtener_info_cuenta(api_key)
     
     if total_creditos is not None:
-        st.sidebar.metric("Créditos Restantes", f"{creditos_restantes} / {total_creditos}")
+        st.sidebar.metric("Créditos Restantes (Mensuales)", f"{creditos_restantes} / {total_creditos}")
         if isinstance(total_creditos, int) and isinstance(creditos_restantes, int):
             porcentaje_restante = max(0.0, min(1.0, creditos_restantes / total_creditos))
             st.sidebar.progress(porcentaje_restante)
 except Exception as e:
     st.sidebar.warning("Configura tu SERPAPI_API_KEY en los secretos para ver tu consumo.")
-
 
 # --- LÓGICA DE BÚSQUEDA ---
 def consultar_api(orig_query, dest_query, fecha, solo_directos):
@@ -163,7 +173,6 @@ def consultar_api(orig_query, dest_query, fecha, solo_directos):
         escala_str = "Directo" if escalas == 0 else f"{escalas} escala(s)"
         primer_trayecto = trayectos[0]
         
-        # Identificamos el aeropuerto EXACTO desde el que sale/llega el vuelo (útil si hay cercanos)
         salida_aeropuerto = primer_trayecto.get("departure_airport", {}).get("id", "")
         salida_dt = primer_trayecto.get("departure_airport", {}).get("time", " - ")
         fecha_salida, hora_salida = salida_dt.split(" ") if " " in salida_dt else (salida_dt, "")
@@ -243,7 +252,7 @@ def mostrar_tabla_y_datos(df, orig_query, dest_query, fecha, solo_directos, con_
             with st.expander(f"Ver los {len(df)-5} resultados restantes"):
                 st.dataframe(df.iloc[5:].reset_index(drop=True), hide_index=True, use_container_width=True)
         
-        st.markdown("<br>", unsafe_allow_html=True)
+        # Eliminados los saltos de línea extra (<br>) para reducir el hueco superior
         mejor_precio = df.iloc[0]["Precio"]
         
         if con_tendencia:
@@ -258,25 +267,25 @@ def mostrar_tabla_y_datos(df, orig_query, dest_query, fecha, solo_directos, con_
         else:
             st.metric(label=f"💰 Mejor precio para el {fecha.strftime('%d/%m/%Y')}", value=mejor_precio)
             
-        st.markdown("<hr>", unsafe_allow_html=True)
+        # Reemplazado <hr> nativo por una línea divisoria compacta para reducir el hueco inferior
+        st.markdown("<hr style='margin: 0.5em 0 1.5em 0; border: none; border-top: 1px solid rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
     else:
         st.warning("No se encontraron vuelos para esta ruta con los filtros seleccionados.")
 
 # --- RENDERIZADO DE RESULTADOS ---
 if buscar_btn:
-    # 1. Preparar las consultas expandidas (Aeropuertos cercanos si aplica)
-    orig_query = obtener_lista_aeropuertos(origen, radio_km) if buscar_cercanos else origen
-    dest_query = obtener_lista_aeropuertos(destino, radio_km) if buscar_cercanos else destino
+    orig_query_ida = obtener_lista_aeropuertos(origen, radio_km_origen) if buscar_cercanos_origen else origen
+    dest_query_ida = obtener_lista_aeropuertos(destino, radio_km_destino) if buscar_cercanos_destino else destino
 
     col_tit_ida, col_stat_ida = st.columns([1, 3])
     with col_tit_ida:
         st.subheader("🛫 Trayecto de Ida")
     with col_stat_ida:
         with st.status("Buscando tarifas de ida...", expanded=True) as status_ida:
-            df_ida = consultar_api(orig_query, dest_query, fecha_ida, vuelo_directo)
+            df_ida = consultar_api(orig_query_ida, dest_query_ida, fecha_ida, vuelo_directo)
             status_ida.update(label="¡Búsqueda de ida completada!", state="complete", expanded=False)
             
-    mostrar_tabla_y_datos(df_ida, orig_query, dest_query, fecha_ida, vuelo_directo, mostrar_tendencia)
+    mostrar_tabla_y_datos(df_ida, orig_query_ida, dest_query_ida, fecha_ida, vuelo_directo, mostrar_tendencia)
     
     if buscar_vuelta:
         col_tit_vue, col_stat_vue = st.columns([1, 3])
@@ -284,7 +293,7 @@ if buscar_btn:
             st.subheader("🛬 Trayecto de Vuelta")
         with col_stat_vue:
             with st.status("Buscando tarifas de vuelta...", expanded=True) as status_vuelta:
-                df_vuelta = consultar_api(dest_query, orig_query, fecha_vuelta, vuelo_directo)
+                df_vuelta = consultar_api(dest_query_ida, orig_query_ida, fecha_vuelta, vuelo_directo)
                 status_vuelta.update(label="¡Búsqueda de vuelta completada!", state="complete", expanded=False)
                 
-        mostrar_tabla_y_datos(df_vuelta, dest_query, orig_query, fecha_vuelta, vuelo_directo, mostrar_tendencia)
+        mostrar_tabla_y_datos(df_vuelta, dest_query_ida, orig_query_ida, fecha_vuelta, vuelo_directo, mostrar_tendencia)

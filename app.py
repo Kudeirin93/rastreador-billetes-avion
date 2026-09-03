@@ -726,7 +726,7 @@ def build_flight_params(
 # ============================================================
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def obtener_calendario_precios(base_params_json, radius):
+def obtener_calendario_precios(base_params_json, radius_ida, radius_vuelta):
     base_params = json.loads(base_params_json)
     base_out = datetime.datetime.strptime(base_params["outbound_date"], "%Y-%m-%d").date()
     base_return = None
@@ -734,31 +734,37 @@ def obtener_calendario_precios(base_params_json, radius):
         base_return = datetime.datetime.strptime(base_params["return_date"], "%Y-%m-%d").date()
 
     rows = []
-    for delta in range(-int(radius), int(radius) + 1):
-        out_date = base_out + datetime.timedelta(days=delta)
+    ida_deltas = range(-int(radius_ida), int(radius_ida) + 1)
+    vuelta_deltas = range(-int(radius_vuelta), int(radius_vuelta) + 1) if base_return else [0]
+
+    for d_ida in ida_deltas:
+        out_date = base_out + datetime.timedelta(days=d_ida)
         if out_date < datetime.date.today():
             continue
 
-        params = dict(base_params)
-        params["outbound_date"] = out_date.strftime("%Y-%m-%d")
+        for d_vuelta in vuelta_deltas:
+            ret_date = base_return + datetime.timedelta(days=d_vuelta) if base_return else None
+            # Evitar combinaciones donde el viaje de vuelta es anterior al de ida
+            if ret_date and ret_date < out_date:
+                continue
 
-        ret_date = None
-        if base_return:
-            ret_date = base_return + datetime.timedelta(days=delta)
-            params["return_date"] = ret_date.strftime("%Y-%m-%d")
+            params = dict(base_params)
+            params["outbound_date"] = out_date.strftime("%Y-%m-%d")
+            if ret_date:
+                params["return_date"] = ret_date.strftime("%Y-%m-%d")
 
-        try:
-            result = serp_search(params)
-            items = extraer_items_vuelos(result)
-            prices = [item.get("price") for item in items if isinstance(item.get("price"), (int, float))]
-            if prices:
-                rows.append({
-                    "Fecha ida": out_date,
-                    "Fecha vuelta": ret_date,
-                    "Precio mínimo (€)": min(prices),
-                })
-        except Exception:
-            continue
+            try:
+                result = serp_search(params)
+                items = extraer_items_vuelos(result)
+                prices = [item.get("price") for item in items if isinstance(item.get("price"), (int, float))]
+                if prices:
+                    rows.append({
+                        "Fecha ida": out_date.strftime("%d/%m"),
+                        "Fecha vuelta": ret_date.strftime("%d/%m") if ret_date else None,
+                        "Precio mínimo (€)": min(prices),
+                    })
+            except Exception:
+                continue
 
     return pd.DataFrame(rows)
 
@@ -925,20 +931,25 @@ if modo == "🔎 Buscar vuelos":
         value=True,
         help="Activa show_hidden + deep_search para aproximarse a los resultados del navegador.",
     )
-    fechas_flexibles = st.sidebar.checkbox("Fechas flexibles", value=False)
-    radio_fechas = 3
-    if fechas_flexibles:
-        radio_fechas = st.sidebar.slider("Días alrededor de la fecha", min_value=1, max_value=5, value=3)
+    
+    flex_ida = st.sidebar.checkbox("Fechas flexibles ida", value=False)
+    radio_ida = st.sidebar.slider("Días de margen (ida)", min_value=1, max_value=5, value=3) if flex_ida else 0
 
-    coste_estimado = 1 + ((2 * radio_fechas) if fechas_flexibles else 0)
+    flex_vuelta = False
+    radio_vuelta = 0
+    if buscar_vuelta:
+        flex_vuelta = st.sidebar.checkbox("Fechas flexibles vuelta", value=False)
+        radio_vuelta = st.sidebar.slider("Días de margen (vuelta)", min_value=1, max_value=5, value=3) if flex_vuelta else 0
+
+    # Cálculo multiplicativo de la matriz de llamadas
+    consultas_ida = (1 + 2 * radio_ida) if flex_ida else 1
+    consultas_vuelta = (1 + 2 * radio_vuelta) if flex_vuelta else 1
+    coste_estimado = consultas_ida * consultas_vuelta
+
+    if coste_estimado > 10:
+        st.sidebar.warning(f"⚠️ La flexibilidad cruzada lanzará {coste_estimado} peticiones simultáneas a la API.")
+
     mostrar_consumo_api(coste_estimado)
-
-    buscar_btn = st.sidebar.button(
-        "Buscar vuelos",
-        type="primary",
-        use_container_width=True,
-        disabled=bool(incluir_aerolineas and excluir_aerolineas),
-    )
 
     if buscar_btn:
         if not origen or not destino:
@@ -998,8 +1009,10 @@ if modo == "🔎 Buscar vuelos":
                     "return_date": fecha_vuelta if buscar_vuelta else None,
                     "travel_class": CABIN_CLASSES[clase_sel],
                     "adults": adultos,
-                    "flexible": fechas_flexibles,
-                    "radius": radio_fechas,
+                    "flexible_ida": flex_ida,
+                    "radius_ida": radio_ida,
+                    "flexible_vuelta": flex_vuelta,
+                    "radius_vuelta": radio_vuelta,
                 }
                 st.session_state.pop("return_search", None)
 
@@ -1052,22 +1065,31 @@ if modo == "🔎 Buscar vuelos":
 
         mostrar_price_insights(result)
 
-        if search_state["flexible"]:
-            st.markdown("### 📅 Fechas flexibles")
-            st.caption("En ida y vuelta se desplazan ambas fechas el mismo número de días para mantener la duración del viaje.")
+        if search_state.get("flexible_ida") or search_state.get("flexible_vuelta"):
+            st.markdown("### 📅 Fechas flexibles (Matriz de precios)")
+            st.caption("Compara cruces de fechas para encontrar la combinación más barata.")
             try:
                 base_params_json = json.dumps(params, sort_keys=True, separators=(",", ":"))
-                with st.spinner("Comparando fechas cercanas..."):
-                    cal_df = obtener_calendario_precios(base_params_json, search_state["radius"])
+                with st.spinner(f"Construyendo matriz (hasta {coste_estimado} comprobaciones)..."):
+                    cal_df = obtener_calendario_precios(
+                        base_params_json, 
+                        search_state["radius_ida"], 
+                        search_state["radius_vuelta"]
+                    )
                 if cal_df.empty:
                     st.info("No se han podido obtener precios para fechas cercanas.")
                 else:
-                    st.dataframe(cal_df, hide_index=True, use_container_width=True)
-                    chart_df = cal_df.copy()
-                    chart_df["Fecha ida"] = pd.to_datetime(chart_df["Fecha ida"])
-                    st.line_chart(chart_df.set_index("Fecha ida")[["Precio mínimo (€)"]])
+                    # Si ambos están activos, dibuja una matriz (pivot table)
+                    if search_state["radius_ida"] > 0 and search_state["radius_vuelta"] > 0 and search_state["return_date"]:
+                        matriz = cal_df.pivot(index="Fecha ida", columns="Fecha vuelta", values="Precio mínimo (€)")
+                        st.dataframe(matriz, use_container_width=True)
+                    # Si solo uno es flexible, dibuja la gráfica lineal
+                    else:
+                        st.dataframe(cal_df, hide_index=True, use_container_width=True)
+                        eje_x = "Fecha ida" if search_state["radius_ida"] > 0 else "Fecha vuelta"
+                        st.line_chart(cal_df.set_index(eje_x)[["Precio mínimo (€)"]])
             except Exception as exc:
-                st.warning(f"No se pudo construir el calendario de precios: {exc}")
+                st.warning(f"No se pudo construir la matriz de precios: {exc}")
 
         st.markdown("### 📈 Histórico local")
         hist = obtener_historico(

@@ -830,7 +830,10 @@ def explorar_a_df(result):
 # MODO Y CONSUMO API
 # ============================================================
 
-st.sidebar.title("✈️ Menú Principal")
+st.sidebar.markdown(
+    "<h2 style='margin-top: -40px;'>✈️ Menú Principal</h2>", 
+    unsafe_allow_html=True
+)
 modo = st.sidebar.radio("Modo", ["🔎 Buscar vuelos", "🌍 Inspírame"], index=0)
 
 

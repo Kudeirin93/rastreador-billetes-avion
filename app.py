@@ -75,7 +75,6 @@ page_bg_img = """
 [data-testid="stStatusWidget"] {
     margin-top: -10px;
 }
-/* Estrechar márgenes nativos de la métrica */
 [data-testid="stMetric"] {
     padding-top: 0.5rem !important;
     padding-bottom: 0rem !important;
@@ -85,17 +84,40 @@ page_bg_img = """
 st.markdown(page_bg_img, unsafe_allow_html=True)
 st.markdown("<h1 style='text-align: center;'>Buscador de Vuelos Low-Cost ✈️</h1><br>", unsafe_allow_html=True)
 
+# --- LECTURA DE PARÁMETROS DE LA URL PARA COMPARTIR ENLACES ---
+hoy = datetime.date.today()
+def_origen = st.query_params.get("origen", "MAD")
+def_destino = st.query_params.get("destino", "BER")
+
+try:
+    def_ida = datetime.datetime.strptime(st.query_params.get("ida", ""), "%Y-%m-%d").date()
+    if def_ida < hoy: def_ida = hoy
+except:
+    def_ida = hoy
+
+q_vuelta = st.query_params.get("vuelta", "")
+def_buscar_vuelta = bool(q_vuelta)
+try:
+    def_vuelta = datetime.datetime.strptime(q_vuelta, "%Y-%m-%d").date()
+    if def_vuelta < def_ida: def_vuelta = def_ida
+except:
+    def_vuelta = def_ida
+
 # --- BARRA LATERAL (CONFIGURACIÓN) ---
 st.sidebar.header("Configuración de Búsqueda")
-origen = st.sidebar.text_input("Origen (IATA)", value="MAD").upper()
-destino = st.sidebar.text_input("Destino (IATA)", value="BER").upper()
+origen = st.sidebar.text_input("Origen (IATA)", value=def_origen).upper()
+destino = st.sidebar.text_input("Destino (IATA)", value=def_destino).upper()
 
-hoy = datetime.date.today()
-fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=hoy)
-buscar_vuelta = st.sidebar.checkbox("Añadir vuelo de vuelta")
+fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=def_ida)
+buscar_vuelta = st.sidebar.checkbox("Añadir vuelo de vuelta", value=def_buscar_vuelta)
 
 if buscar_vuelta:
-    fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta", min_value=fecha_ida, value=fecha_ida)
+    fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta", min_value=fecha_ida, value=def_vuelta)
+
+# Nuevas Opciones: Clase y Aerolíneas excluidas
+clases_dict = {"Turista": "1", "Turista Premium": "2", "Business": "3", "Primera Clase": "4"}
+clase_sel = st.sidebar.selectbox("Clase de Cabina", list(clases_dict.keys()), index=0)
+aerolineas_excluidas_str = st.sidebar.text_input("Excluir aerolíneas (ej: Ryanair, Wizz Air)", help="Sepáralas por comas si son varias.")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🌍 Aeropuertos Cercanos")
@@ -127,22 +149,22 @@ if mostrar_tendencia:
     coste_estimado += 7
     if buscar_vuelta: coste_estimado += 7
 
-st.sidebar.info(f"⚡ **Coste estimado de esta consulta:** {coste_estimado} créditos")
+st.sidebar.info(f"⚡ **Coste estimado (si no está cacheado):** {coste_estimado} créditos")
 
 try:
     api_key = st.secrets["SERPAPI_API_KEY"]
     total_creditos, creditos_restantes = obtener_info_cuenta(api_key)
-    
     if total_creditos is not None:
         st.sidebar.metric("Créditos Restantes (Mensuales)", f"{creditos_restantes} / {total_creditos}")
         if isinstance(total_creditos, int) and isinstance(creditos_restantes, int):
             porcentaje_restante = max(0.0, min(1.0, creditos_restantes / total_creditos))
             st.sidebar.progress(porcentaje_restante)
 except Exception as e:
-    st.sidebar.warning("Configura tu SERPAPI_API_KEY en los secretos para ver tu consumo.")
+    pass
 
-# --- LÓGICA DE BÚSQUEDA ---
-def consultar_api(orig_query, dest_query, fecha, solo_directos):
+# --- LÓGICA DE BÚSQUEDA (CON CACHÉ DE 1 HORA) ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def consultar_api(orig_query, dest_query, fecha, solo_directos, clase_val, excluidas_str):
     api_key = st.secrets["SERPAPI_API_KEY"]
     params = {
         "engine": "google_flights",
@@ -152,6 +174,7 @@ def consultar_api(orig_query, dest_query, fecha, solo_directos):
         "currency": "EUR",
         "hl": "es",
         "type": "2",
+        "travel_class": clase_val,
         "api_key": api_key
     }
     if solo_directos:
@@ -162,6 +185,9 @@ def consultar_api(orig_query, dest_query, fecha, solo_directos):
     
     todos_los_vuelos = results.get("best_flights", []) + results.get("other_flights", [])
     vuelos_limpios = []
+    
+    # Procesar la lista negra de aerolíneas
+    lista_negra = [x.strip().lower() for x in excluidas_str.split(',')] if excluidas_str else []
 
     for item in todos_los_vuelos:
         trayectos = item.get("flights", [])
@@ -169,6 +195,12 @@ def consultar_api(orig_query, dest_query, fecha, solo_directos):
             
         escalas = len(trayectos) - 1
         if solo_directos and escalas > 0: continue
+        
+        aerolineas = ", ".join([v.get("airline", "") for v in trayectos])
+        
+        # Filtrar si la aerolínea está en la lista negra
+        if lista_negra and any(excl.lower() in aerolineas.lower() for excl in lista_negra if excl):
+            continue
             
         escala_str = "Directo" if escalas == 0 else f"{escalas} escala(s)"
         primer_trayecto = trayectos[0]
@@ -184,8 +216,6 @@ def consultar_api(orig_query, dest_query, fecha, solo_directos):
         
         pais_salida = obtener_pais(salida_aeropuerto)
         pais_llegada = obtener_pais(llegada_aeropuerto)
-        
-        aerolineas = ", ".join([v.get("airline", "") for v in trayectos])
         
         vuelos_limpios.append({
             "Aerolínea": aerolineas,
@@ -214,8 +244,11 @@ def consultar_api(orig_query, dest_query, fecha, solo_directos):
         return df.drop(columns=["Precio_Num"])
     return pd.DataFrame()
 
-def obtener_tendencia_precios(orig_query, dest_query, fecha_base, solo_directos):
+@st.cache_data(ttl=3600, show_spinner=False)
+def obtener_tendencia_precios(orig_query, dest_query, fecha_base, solo_directos, clase_val, excluidas_str):
     datos_tendencia = []
+    lista_negra = [x.strip().lower() for x in excluidas_str.split(',')] if excluidas_str else []
+
     for delta in range(-3, 4):
         fecha_eval = fecha_base + datetime.timedelta(days=delta)
         if fecha_eval < datetime.date.today(): continue
@@ -229,6 +262,7 @@ def obtener_tendencia_precios(orig_query, dest_query, fecha_base, solo_directos)
             "currency": "EUR",
             "hl": "es",
             "type": "2",
+            "travel_class": clase_val,
             "api_key": api_key
         }
         if solo_directos:
@@ -238,21 +272,30 @@ def obtener_tendencia_precios(orig_query, dest_query, fecha_base, solo_directos)
             search = GoogleSearch(params)
             res = search.get_dict()
             vuelos = res.get("best_flights", []) + res.get("other_flights", [])
+            
             if vuelos:
-                precio_min = min([v.get("price", 9999) for v in vuelos if v.get("price")])
-                datos_tendencia.append({"Fecha": fecha_eval, "Precio (€)": precio_min})
+                precios_validos = []
+                for v in vuelos:
+                    if not v.get("price"): continue
+                    # Filtro de aerolínea también en la tendencia
+                    t_aero = ", ".join([t.get("airline", "") for t in v.get("flights", [])])
+                    if lista_negra and any(excl.lower() in t_aero.lower() for excl in lista_negra if excl):
+                        continue
+                    precios_validos.append(v.get("price"))
+                    
+                if precios_validos:
+                    datos_tendencia.append({"Fecha": fecha_eval, "Precio (€)": min(precios_validos)})
         except:
             pass
     return pd.DataFrame(datos_tendencia)
 
-def mostrar_tabla_y_datos(df, orig_query, dest_query, fecha, solo_directos, con_tendencia):
+def mostrar_tabla_y_datos(df, orig_query, dest_query, fecha, solo_directos, con_tendencia, prefijo_archivo, clase_val, excluidas):
     if not df.empty:
         st.dataframe(df.head(5), hide_index=True, use_container_width=True)
         if len(df) > 5:
             with st.expander(f"Ver los {len(df)-5} resultados restantes"):
                 st.dataframe(df.iloc[5:].reset_index(drop=True), hide_index=True, use_container_width=True)
         
-        # Eliminados los saltos de línea extra (<br>) para reducir el hueco superior
         mejor_precio = df.iloc[0]["Precio"]
         
         if con_tendencia:
@@ -260,20 +303,38 @@ def mostrar_tabla_y_datos(df, orig_query, dest_query, fecha, solo_directos, con_
             with col1:
                 st.metric(label=f"💰 Mejor precio ({fecha.strftime('%d/%m')})", value=mejor_precio)
             with col2:
-                df_tendencia = obtener_tendencia_precios(orig_query, dest_query, fecha, solo_directos)
+                df_tendencia = obtener_tendencia_precios(orig_query, dest_query, fecha, solo_directos, clase_val, excluidas)
                 if not df_tendencia.empty:
                     st.markdown("**Tendencia de precios (±3 días)**")
                     st.line_chart(df_tendencia.set_index("Fecha"))
         else:
             st.metric(label=f"💰 Mejor precio para el {fecha.strftime('%d/%m/%Y')}", value=mejor_precio)
             
-        # Reemplazado <hr> nativo por una línea divisoria compacta para reducir el hueco inferior
         st.markdown("<hr style='margin: 0.5em 0 1.5em 0; border: none; border-top: 1px solid rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
+        
+        # Botón de descarga CSV
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📥 Descargar resultados de {prefijo_archivo} (CSV)",
+            data=csv,
+            file_name=f"vuelos_{prefijo_archivo}_{fecha.strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+        )
     else:
         st.warning("No se encontraron vuelos para esta ruta con los filtros seleccionados.")
 
 # --- RENDERIZADO DE RESULTADOS ---
 if buscar_btn:
+    # Actualizar URL con los parámetros buscados para compartir
+    st.query_params["origen"] = origen
+    st.query_params["destino"] = destino
+    st.query_params["ida"] = fecha_ida.strftime("%Y-%m-%d")
+    if buscar_vuelta:
+        st.query_params["vuelta"] = fecha_vuelta.strftime("%Y-%m-%d")
+    elif "vuelta" in st.query_params:
+        del st.query_params["vuelta"]
+
+    valor_clase = clases_dict[clase_sel]
     orig_query_ida = obtener_lista_aeropuertos(origen, radio_km_origen) if buscar_cercanos_origen else origen
     dest_query_ida = obtener_lista_aeropuertos(destino, radio_km_destino) if buscar_cercanos_destino else destino
 
@@ -282,10 +343,10 @@ if buscar_btn:
         st.subheader("🛫 Trayecto de Ida")
     with col_stat_ida:
         with st.status("Buscando tarifas de ida...", expanded=True) as status_ida:
-            df_ida = consultar_api(orig_query_ida, dest_query_ida, fecha_ida, vuelo_directo)
+            df_ida = consultar_api(orig_query_ida, dest_query_ida, fecha_ida, vuelo_directo, valor_clase, aerolineas_excluidas_str)
             status_ida.update(label="¡Búsqueda de ida completada!", state="complete", expanded=False)
             
-    mostrar_tabla_y_datos(df_ida, orig_query_ida, dest_query_ida, fecha_ida, vuelo_directo, mostrar_tendencia)
+    mostrar_tabla_y_datos(df_ida, orig_query_ida, dest_query_ida, fecha_ida, vuelo_directo, mostrar_tendencia, "ida", valor_clase, aerolineas_excluidas_str)
     
     if buscar_vuelta:
         col_tit_vue, col_stat_vue = st.columns([1, 3])
@@ -293,7 +354,7 @@ if buscar_btn:
             st.subheader("🛬 Trayecto de Vuelta")
         with col_stat_vue:
             with st.status("Buscando tarifas de vuelta...", expanded=True) as status_vuelta:
-                df_vuelta = consultar_api(dest_query_ida, orig_query_ida, fecha_vuelta, vuelo_directo)
+                df_vuelta = consultar_api(dest_query_ida, orig_query_ida, fecha_vuelta, vuelo_directo, valor_clase, aerolineas_excluidas_str)
                 status_vuelta.update(label="¡Búsqueda de vuelta completada!", state="complete", expanded=False)
                 
-        mostrar_tabla_y_datos(df_vuelta, dest_query_ida, orig_query_ida, fecha_vuelta, vuelo_directo, mostrar_tendencia)
+        mostrar_tabla_y_datos(df_vuelta, dest_query_ida, orig_query_ida, fecha_vuelta, vuelo_directo, mostrar_tendencia, "vuelta", valor_clase, aerolineas_excluidas_str)

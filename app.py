@@ -951,6 +951,14 @@ if modo == "🔎 Buscar vuelos":
 
     mostrar_consumo_api(coste_estimado)
 
+    # ---> ESTE ES EL BOTÓN QUE FALTA <---
+    buscar_btn = st.sidebar.button(
+        "Buscar vuelos",
+        type="primary",
+        use_container_width=True,
+        disabled=bool(incluir_aerolineas and excluir_aerolineas),
+    )
+
     if buscar_btn:
         if not origen or not destino:
             st.error("Indica un origen y un destino.")

@@ -4,7 +4,6 @@ from serpapi import GoogleSearch
 import datetime
 import airportsdata
 
-# Optimización: Cacheamos la base de datos de aeropuertos
 @st.cache_data
 def load_airports():
     return airportsdata.load('IATA')
@@ -17,9 +16,29 @@ def obtener_pais(iata_code):
     except:
         return ""
 
-# Configuración para que la app ocupe más ancho por defecto
+# Configuración de página
 st.set_page_config(page_title="Buscador Vuelos", layout="wide")
-st.title("Buscador de Vuelos Low-Cost ✈️")
+
+# Inyección de CSS para fondo de pantalla y ajuste del título
+page_bg_img = """
+<style>
+/* Imagen de fondo con capa transparente oscura para que se lean los datos */
+.stApp {
+    background-image: linear-gradient(rgba(14, 17, 23, 0.85), rgba(14, 17, 23, 0.85)), url("https://images.unsplash.com/photo-1524443169398-9aa1ceab67d5?q=80&w=2000&auto=format&fit=crop");
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+}
+/* Reducir el espacio superior (padding) de la aplicación */
+.block-container {
+    padding-top: 2rem !important;
+}
+</style>
+"""
+st.markdown(page_bg_img, unsafe_allow_html=True)
+
+# Título centrado con HTML
+st.markdown("<h1 style='text-align: center;'>Buscador de Vuelos Low-Cost ✈️</h1>", unsafe_allow_html=True)
 
 # --- BARRA LATERAL (CONFIGURACIÓN) ---
 st.sidebar.header("Configuración de Búsqueda")
@@ -83,54 +102,61 @@ def consultar_api(orig, dest, fecha, solo_directos):
         
         aerolineas = ", ".join([v.get("airline", "") for v in trayectos])
         
-        # Saltos de línea y cabecera de Precio actualizada
         vuelos_limpios.append({
             "Aerolínea": aerolineas,
             "Precio": item.get("price"),
             "Origen": f"{orig} ({pais_orig})",
             "Destino": f"{dest} ({pais_dest})",
-            "Fecha\nSalida": fecha_salida,
-            "Hora\nSalida": hora_salida,
-            "Fecha\nLlegada": fecha_llegada,
-            "Hora\nLlegada": hora_llegada,
+            "Fecha Salida": fecha_salida,
+            "Hora Salida": hora_salida,
+            "Fecha Llegada": fecha_llegada,
+            "Hora Llegada": hora_llegada,
             "Escalas": escala_str,
         })
         
     if vuelos_limpios:
         df = pd.DataFrame(vuelos_limpios)
         try:
-            inicio = pd.to_datetime(df['Fecha\nSalida'] + ' ' + df['Hora\nSalida'])
-            fin = pd.to_datetime(df['Fecha\nLlegada'] + ' ' + df['Hora\nLlegada'])
+            inicio = pd.to_datetime(df['Fecha Salida'] + ' ' + df['Hora Salida'])
+            fin = pd.to_datetime(df['Fecha Llegada'] + ' ' + df['Hora Llegada'])
             duracion = fin - inicio
-            df['Tiempo\nTotal'] = duracion.dt.components['hours'].astype(str).str.zfill(2) + "h " + duracion.dt.components['minutes'].astype(str).str.zfill(2) + "m"
+            df['Tiempo Total'] = duracion.dt.components['hours'].astype(str).str.zfill(2) + "h " + duracion.dt.components['minutes'].astype(str).str.zfill(2) + "m"
         except:
-            df['Tiempo\nTotal'] = "N/A"
+            df['Tiempo Total'] = "N/A"
             
-        # 1. Ordenamos por el valor numérico del precio
         df = df.sort_values(by="Precio").reset_index(drop=True)
-        
-        # 2. Convertimos el precio a texto y añadimos el símbolo € a los valores
         df["Precio"] = df["Precio"].apply(lambda x: f"{int(x)} €" if pd.notna(x) else "N/A")
         
         return df
     return pd.DataFrame()
 
-def mostrar_tabla(df, titulo):
+def mostrar_tabla_con_metricas(df, titulo):
     st.subheader(titulo)
     if not df.empty:
+        # Tabla interactiva primero
         st.dataframe(df.head(5), hide_index=True, use_container_width=True)
         if len(df) > 5:
             with st.expander(f"Ver los {len(df)-5} resultados restantes"):
                 st.dataframe(df.iloc[5:].reset_index(drop=True), hide_index=True, use_container_width=True)
+        
+        # Tarjeta destacada debajo de la tabla
+        st.markdown("<br>", unsafe_allow_html=True) # Espacio visual
+        mejor_precio = df.iloc[0]["Precio"]
+        mejor_aerolinea = df.iloc[0]["Aerolínea"]
+        st.metric(label="🏆 Opción más barata para este trayecto", value=mejor_precio, delta=mejor_aerolinea, delta_color="off")
+        st.markdown("<br><br>", unsafe_allow_html=True) # Separación extra entre trayectos
     else:
         st.warning("No se encontraron vuelos para esta ruta con los filtros seleccionados.")
 
+# --- RENDERIZADO DE RESULTADOS ---
 if buscar_btn:
-    with st.spinner("Consultando tarifas de ida..."):
+    with st.status("Buscando tarifas de ida...", expanded=True) as status_ida:
         df_ida = consultar_api(origen, destino, fecha_ida, vuelo_directo)
-        mostrar_tabla(df_ida, "🛫 Trayecto de Ida")
-        
+        status_ida.update(label="¡Búsqueda de ida completada!", state="complete", expanded=False)
+    mostrar_tabla_con_metricas(df_ida, "🛫 Trayecto de Ida")
+    
     if buscar_vuelta:
-        with st.spinner("Consultando tarifas de vuelta..."):
+        with st.status("Buscando tarifas de vuelta...", expanded=True) as status_vuelta:
             df_vuelta = consultar_api(destino, origen, fecha_vuelta, vuelo_directo)
-            mostrar_tabla(df_vuelta, "🛬 Trayecto de Vuelta")
+            status_vuelta.update(label="¡Búsqueda de vuelta completada!", state="complete", expanded=False)
+        mostrar_tabla_con_metricas(df_vuelta, "🛬 Trayecto de Vuelta")

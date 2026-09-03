@@ -59,6 +59,25 @@ def load_airports():
 
 airports = load_airports()
 
+# --- NUEVA FUNCIÓN: Generar lista de ciudades/aeropuertos ---
+@st.cache_data
+def obtener_opciones_aeropuertos():
+    opciones = []
+    for iata, info in airports.items():
+        if len(iata) == 3 and info.get('city'):
+            # Formato: "Ciudad - Nombre del Aeropuerto (IATA)"
+            opciones.append(f"{info['city']} - {info.get('name', 'Aeropuerto')} ({iata})")
+    return sorted(opciones)
+
+opciones_busqueda = obtener_opciones_aeropuertos()
+
+def buscar_indice_por_iata(iata, opciones):
+    iata = iata.upper()
+    for i, opc in enumerate(opciones):
+        if opc.endswith(f"({iata})"):
+            return i
+    return 0
+
 AIRLINES = {
     "Aer Lingus (EI)": "EI",
     "Air Europa (UX)": "UX",
@@ -808,6 +827,7 @@ def explorar_a_df(result):
 # MODO Y CONSUMO API
 # ============================================================
 
+st.sidebar.title("✈️ Menú Principal")
 modo = st.sidebar.radio("Modo", ["🔎 Buscar vuelos", "🌍 Inspírame"], index=0)
 
 
@@ -855,8 +875,22 @@ if modo == "🔎 Buscar vuelos":
         def_vuelta = def_ida
 
     st.sidebar.header("Configuración de Búsqueda")
-    origen = st.sidebar.text_input("Origen (IATA)", value=def_origen).upper().strip()
-    destino = st.sidebar.text_input("Destino (IATA)", value=def_destino).upper().strip()
+    
+    # Desplegables con buscador integrado
+    origen_seleccion = st.sidebar.selectbox(
+        "Origen (Ciudad o Aeropuerto)", 
+        options=opciones_busqueda, 
+        index=buscar_indice_por_iata(def_origen, opciones_busqueda)
+    )
+    destino_seleccion = st.sidebar.selectbox(
+        "Destino (Ciudad o Aeropuerto)", 
+        options=opciones_busqueda, 
+        index=buscar_indice_por_iata(def_destino, opciones_busqueda)
+    )
+    
+    # Extracción automática del código IATA (los 3 caracteres entre paréntesis al final)
+    origen = origen_seleccion.split("(")[-1].replace(")", "").strip()
+    destino = destino_seleccion.split("(")[-1].replace(")", "").strip()
     fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=def_ida)
     buscar_vuelta = st.sidebar.checkbox(
         "Ida y vuelta",

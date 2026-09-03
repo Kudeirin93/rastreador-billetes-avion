@@ -112,7 +112,9 @@ fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=def_ida)
 buscar_vuelta = st.sidebar.checkbox("Añadir vuelo de vuelta", value=def_buscar_vuelta)
 
 if buscar_vuelta:
-    fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta", min_value=fecha_ida, value=def_vuelta)
+    # Aseguramos que el valor inicial de la vuelta nunca sea anterior a la ida seleccionada
+    fecha_vuelta_segura = max(def_vuelta, fecha_ida)
+    fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta", min_value=fecha_ida, value=fecha_vuelta_segura)
 
 # Nuevas Opciones: Clase y Aerolíneas excluidas
 clases_dict = {"Turista": "1", "Turista Premium": "2", "Business": "3", "Primera Clase": "4"}

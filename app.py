@@ -28,16 +28,13 @@ destino = st.sidebar.text_input("Destino (IATA)", value="BER").upper()
 
 hoy = datetime.date.today()
 
-# El valor mínimo es hoy para evitar seleccionar días pasados
 fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=hoy)
 buscar_vuelta = st.sidebar.checkbox("Añadir vuelo de vuelta")
 
 if buscar_vuelta:
-    # Por defecto coge la fecha de ida y no permite seleccionar una anterior a la ida
     fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta", min_value=fecha_ida, value=fecha_ida)
 
 vuelo_directo = st.sidebar.checkbox("Vuelo Directo (Sin escalas)", value=False)
-
 buscar_btn = st.sidebar.button("Buscar vuelos", type="primary", use_container_width=True)
 
 # --- LÓGICA DE BÚSQUEDA ---
@@ -86,36 +83,41 @@ def consultar_api(orig, dest, fecha, solo_directos):
         
         aerolineas = ", ".join([v.get("airline", "") for v in trayectos])
         
+        # Saltos de línea y cabecera de Precio actualizada
         vuelos_limpios.append({
             "Aerolínea": aerolineas,
-            "Precio (€)": item.get("price"),
+            "Precio": item.get("price"),
             "Origen": f"{orig} ({pais_orig})",
             "Destino": f"{dest} ({pais_dest})",
-            "Fecha Salida": fecha_salida,
-            "Hora Salida": hora_salida,
-            "Fecha Llegada": fecha_llegada,
-            "Hora Llegada": hora_llegada,
+            "Fecha\nSalida": fecha_salida,
+            "Hora\nSalida": hora_salida,
+            "Fecha\nLlegada": fecha_llegada,
+            "Hora\nLlegada": hora_llegada,
             "Escalas": escala_str,
         })
         
     if vuelos_limpios:
         df = pd.DataFrame(vuelos_limpios)
         try:
-            inicio = pd.to_datetime(df['Fecha Salida'] + ' ' + df['Hora Salida'])
-            fin = pd.to_datetime(df['Fecha Llegada'] + ' ' + df['Hora Llegada'])
+            inicio = pd.to_datetime(df['Fecha\nSalida'] + ' ' + df['Hora\nSalida'])
+            fin = pd.to_datetime(df['Fecha\nLlegada'] + ' ' + df['Hora\nLlegada'])
             duracion = fin - inicio
-            df['Tiempo Total'] = duracion.dt.components['hours'].astype(str).str.zfill(2) + "h " + duracion.dt.components['minutes'].astype(str).str.zfill(2) + "m"
+            df['Tiempo\nTotal'] = duracion.dt.components['hours'].astype(str).str.zfill(2) + "h " + duracion.dt.components['minutes'].astype(str).str.zfill(2) + "m"
         except:
-            df['Tiempo Total'] = "N/A"
+            df['Tiempo\nTotal'] = "N/A"
             
-        df = df.sort_values(by="Precio (€)").reset_index(drop=True)
+        # 1. Ordenamos por el valor numérico del precio
+        df = df.sort_values(by="Precio").reset_index(drop=True)
+        
+        # 2. Convertimos el precio a texto y añadimos el símbolo € a los valores
+        df["Precio"] = df["Precio"].apply(lambda x: f"{int(x)} €" if pd.notna(x) else "N/A")
+        
         return df
     return pd.DataFrame()
 
 def mostrar_tabla(df, titulo):
     st.subheader(titulo)
     if not df.empty:
-        # Se oculta el índice (#) y se fuerza a ocupar todo el ancho disponible
         st.dataframe(df.head(5), hide_index=True, use_container_width=True)
         if len(df) > 5:
             with st.expander(f"Ver los {len(df)-5} resultados restantes"):

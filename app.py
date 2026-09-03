@@ -5,6 +5,7 @@ import datetime
 import airportsdata
 import urllib.request
 import json
+import math
 
 @st.cache_data
 def load_airports():
@@ -27,6 +28,34 @@ def obtener_info_cuenta(api_key):
             return data.get("searches_per_month", "N/A"), data.get("total_searches_left", "N/A")
     except:
         return None, None
+
+# --- CÁLCULO DE DISTANCIAS Y AEROPUERTOS CERCANOS ---
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371.0 # Radio de la Tierra en km
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def obtener_lista_aeropuertos(iata_base, radio_km):
+    iata_base = iata_base.upper()
+    if iata_base not in airports:
+        return iata_base # Si no lo encuentra, devuelve el original
+        
+    lat_base = airports[iata_base]['lat']
+    lon_base = airports[iata_base]['lon']
+    
+    cercanos = []
+    for iata, info in airports.items():
+        if len(iata) == 3: # Asegurar que es un código IATA válido
+            dist = haversine(lat_base, lon_base, info['lat'], info['lon'])
+            if dist <= radio_km:
+                cercanos.append((iata, dist))
+                
+    # Ordenar por distancia y limitar a los 5 más cercanos para no saturar la API de Google
+    cercanos.sort(key=lambda x: x[1])
+    lista_final = [c[0] for c in cercanos[:5]]
+    return ",".join(lista_final)
 
 st.set_page_config(page_title="Buscador Vuelos", layout="wide")
 
@@ -66,6 +95,13 @@ buscar_vuelta = st.sidebar.checkbox("Añadir vuelo de vuelta")
 if buscar_vuelta:
     fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta", min_value=fecha_ida, value=fecha_ida)
 
+# Selector de aeropuertos cercanos
+buscar_cercanos = st.sidebar.checkbox("Incluir aeropuertos cercanos", value=False)
+if buscar_cercanos:
+    radio_km = st.sidebar.slider("Radio de búsqueda (km)", min_value=50, max_value=300, value=100, step=10)
+else:
+    radio_km = 0
+
 vuelo_directo = st.sidebar.checkbox("Vuelo Directo (Sin escalas)", value=False)
 mostrar_tendencia = st.sidebar.checkbox("Mostrar tendencia de precios", value=False)
 buscar_btn = st.sidebar.button("Buscar vuelos", type="primary", use_container_width=True)
@@ -74,24 +110,20 @@ buscar_btn = st.sidebar.button("Buscar vuelos", type="primary", use_container_wi
 st.sidebar.markdown("---")
 st.sidebar.subheader("📊 Consumo de SerpApi")
 
-# Calculadora de coste estimado
 coste_estimado = 1
 if buscar_vuelta: coste_estimado += 1
 if mostrar_tendencia:
-    coste_estimado += 7 # La API busca 7 fechas distintas para la ida
-    if buscar_vuelta: coste_estimado += 7 # Y otras 7 para la vuelta
+    coste_estimado += 7
+    if buscar_vuelta: coste_estimado += 7
 
 st.sidebar.info(f"⚡ **Coste estimado de esta consulta:** {coste_estimado} créditos")
 
-# Obtener y mostrar datos reales de la cuenta
 try:
     api_key = st.secrets["SERPAPI_API_KEY"]
     total_creditos, creditos_restantes = obtener_info_cuenta(api_key)
     
     if total_creditos is not None:
         st.sidebar.metric("Créditos Restantes", f"{creditos_restantes} / {total_creditos}")
-        
-        # Opcional: Barra de progreso visual para el consumo
         if isinstance(total_creditos, int) and isinstance(creditos_restantes, int):
             porcentaje_restante = max(0.0, min(1.0, creditos_restantes / total_creditos))
             st.sidebar.progress(porcentaje_restante)
@@ -100,12 +132,12 @@ except Exception as e:
 
 
 # --- LÓGICA DE BÚSQUEDA ---
-def consultar_api(orig, dest, fecha, solo_directos):
+def consultar_api(orig_query, dest_query, fecha, solo_directos):
     api_key = st.secrets["SERPAPI_API_KEY"]
     params = {
         "engine": "google_flights",
-        "departure_id": orig,
-        "arrival_id": dest,
+        "departure_id": orig_query,
+        "arrival_id": dest_query,
         "outbound_date": fecha.strftime("%Y-%m-%d"),
         "currency": "EUR",
         "hl": "es",
@@ -120,8 +152,6 @@ def consultar_api(orig, dest, fecha, solo_directos):
     
     todos_los_vuelos = results.get("best_flights", []) + results.get("other_flights", [])
     vuelos_limpios = []
-    pais_orig = obtener_pais(orig)
-    pais_dest = obtener_pais(dest)
 
     for item in todos_los_vuelos:
         trayectos = item.get("flights", [])
@@ -132,20 +162,27 @@ def consultar_api(orig, dest, fecha, solo_directos):
             
         escala_str = "Directo" if escalas == 0 else f"{escalas} escala(s)"
         primer_trayecto = trayectos[0]
+        
+        # Identificamos el aeropuerto EXACTO desde el que sale/llega el vuelo (útil si hay cercanos)
+        salida_aeropuerto = primer_trayecto.get("departure_airport", {}).get("id", "")
         salida_dt = primer_trayecto.get("departure_airport", {}).get("time", " - ")
         fecha_salida, hora_salida = salida_dt.split(" ") if " " in salida_dt else (salida_dt, "")
         
         ultimo_trayecto = trayectos[-1]
+        llegada_aeropuerto = ultimo_trayecto.get("arrival_airport", {}).get("id", "")
         llegada_dt = ultimo_trayecto.get("arrival_airport", {}).get("time", " - ")
         fecha_llegada, hora_llegada = llegada_dt.split(" ") if " " in llegada_dt else (llegada_dt, "")
+        
+        pais_salida = obtener_pais(salida_aeropuerto)
+        pais_llegada = obtener_pais(llegada_aeropuerto)
         
         aerolineas = ", ".join([v.get("airline", "") for v in trayectos])
         
         vuelos_limpios.append({
             "Aerolínea": aerolineas,
             "Precio_Num": item.get("price", 0),
-            "Origen": f"{orig} ({pais_orig})",
-            "Destino": f"{dest} ({pais_dest})",
+            "Origen": f"{salida_aeropuerto} ({pais_salida})",
+            "Destino": f"{llegada_aeropuerto} ({pais_llegada})",
             "Fecha Salida": fecha_salida,
             "Hora Salida": hora_salida,
             "Fecha Llegada": fecha_llegada,
@@ -168,7 +205,7 @@ def consultar_api(orig, dest, fecha, solo_directos):
         return df.drop(columns=["Precio_Num"])
     return pd.DataFrame()
 
-def obtener_tendencia_precios(orig, dest, fecha_base, solo_directos):
+def obtener_tendencia_precios(orig_query, dest_query, fecha_base, solo_directos):
     datos_tendencia = []
     for delta in range(-3, 4):
         fecha_eval = fecha_base + datetime.timedelta(days=delta)
@@ -177,8 +214,8 @@ def obtener_tendencia_precios(orig, dest, fecha_base, solo_directos):
         api_key = st.secrets["SERPAPI_API_KEY"]
         params = {
             "engine": "google_flights",
-            "departure_id": orig,
-            "arrival_id": dest,
+            "departure_id": orig_query,
+            "arrival_id": dest_query,
             "outbound_date": fecha_eval.strftime("%Y-%m-%d"),
             "currency": "EUR",
             "hl": "es",
@@ -194,12 +231,12 @@ def obtener_tendencia_precios(orig, dest, fecha_base, solo_directos):
             vuelos = res.get("best_flights", []) + res.get("other_flights", [])
             if vuelos:
                 precio_min = min([v.get("price", 9999) for v in vuelos if v.get("price")])
-                datos_tendencia.append({"Fecha": fecha_eval.strftime("%d/%m"), "Precio (€)": precio_min})
+                datos_tendencia.append({"Fecha": fecha_eval, "Precio (€)": precio_min})
         except:
             pass
     return pd.DataFrame(datos_tendencia)
 
-def mostrar_tabla_y_datos(df, orig, dest, fecha, solo_directos, con_tendencia):
+def mostrar_tabla_y_datos(df, orig_query, dest_query, fecha, solo_directos, con_tendencia):
     if not df.empty:
         st.dataframe(df.head(5), hide_index=True, use_container_width=True)
         if len(df) > 5:
@@ -214,7 +251,7 @@ def mostrar_tabla_y_datos(df, orig, dest, fecha, solo_directos, con_tendencia):
             with col1:
                 st.metric(label=f"💰 Mejor precio ({fecha.strftime('%d/%m')})", value=mejor_precio)
             with col2:
-                df_tendencia = obtener_tendencia_precios(orig, dest, fecha, solo_directos)
+                df_tendencia = obtener_tendencia_precios(orig_query, dest_query, fecha, solo_directos)
                 if not df_tendencia.empty:
                     st.markdown("**Tendencia de precios (±3 días)**")
                     st.line_chart(df_tendencia.set_index("Fecha"))
@@ -227,15 +264,19 @@ def mostrar_tabla_y_datos(df, orig, dest, fecha, solo_directos, con_tendencia):
 
 # --- RENDERIZADO DE RESULTADOS ---
 if buscar_btn:
+    # 1. Preparar las consultas expandidas (Aeropuertos cercanos si aplica)
+    orig_query = obtener_lista_aeropuertos(origen, radio_km) if buscar_cercanos else origen
+    dest_query = obtener_lista_aeropuertos(destino, radio_km) if buscar_cercanos else destino
+
     col_tit_ida, col_stat_ida = st.columns([1, 3])
     with col_tit_ida:
         st.subheader("🛫 Trayecto de Ida")
     with col_stat_ida:
         with st.status("Buscando tarifas de ida...", expanded=True) as status_ida:
-            df_ida = consultar_api(origen, destino, fecha_ida, vuelo_directo)
+            df_ida = consultar_api(orig_query, dest_query, fecha_ida, vuelo_directo)
             status_ida.update(label="¡Búsqueda de ida completada!", state="complete", expanded=False)
             
-    mostrar_tabla_y_datos(df_ida, origen, destino, fecha_ida, vuelo_directo, mostrar_tendencia)
+    mostrar_tabla_y_datos(df_ida, orig_query, dest_query, fecha_ida, vuelo_directo, mostrar_tendencia)
     
     if buscar_vuelta:
         col_tit_vue, col_stat_vue = st.columns([1, 3])
@@ -243,7 +284,7 @@ if buscar_btn:
             st.subheader("🛬 Trayecto de Vuelta")
         with col_stat_vue:
             with st.status("Buscando tarifas de vuelta...", expanded=True) as status_vuelta:
-                df_vuelta = consultar_api(destino, origen, fecha_vuelta, vuelo_directo)
+                df_vuelta = consultar_api(dest_query, orig_query, fecha_vuelta, vuelo_directo)
                 status_vuelta.update(label="¡Búsqueda de vuelta completada!", state="complete", expanded=False)
                 
-        mostrar_tabla_y_datos(df_vuelta, destino, origen, fecha_vuelta, vuelo_directo, mostrar_tendencia)
+        mostrar_tabla_y_datos(df_vuelta, dest_query, orig_query, fecha_vuelta, vuelo_directo, mostrar_tendencia)

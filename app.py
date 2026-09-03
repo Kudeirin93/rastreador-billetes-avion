@@ -44,6 +44,9 @@ page_bg_img = """
     padding-top: 0.5rem !important;
     padding-bottom: 0rem !important;
 }
+[data-testid="stSidebarUserContent"] {
+    padding-top: 1rem !important;
+}
 </style>
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)

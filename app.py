@@ -19,17 +19,24 @@ def obtener_pais(iata_code):
 # Configuración de página
 st.set_page_config(page_title="Buscador Vuelos", layout="wide")
 
-# Inyección de CSS para fondo de pantalla y ajuste del título
+# Inyección de CSS para fondo principal y diseño de la barra lateral
 page_bg_img = """
 <style>
-/* Imagen de fondo con capa transparente oscura para que se lean los datos */
+/* Imagen de fondo principal con capa oscura */
 .stApp {
-    background-image: linear-gradient(rgba(14, 17, 23, 0.85), rgba(14, 17, 23, 0.85)), url("https://images.unsplash.com/photo-1524443169398-9aa1ceab67d5?q=80&w=2000&auto=format&fit=crop");
+    background-image: linear-gradient(rgba(14, 17, 23, 0.75), rgba(14, 17, 23, 0.85)), url("https://images.unsplash.com/photo-1542296332-2e4473faf563?q=80&w=2000&auto=format&fit=crop");
     background-size: cover;
     background-position: center;
     background-attachment: fixed;
 }
-/* Reducir el espacio superior (padding) de la aplicación */
+
+/* Diseño elegante para el panel lateral */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, rgba(17, 21, 30, 0.95) 0%, rgba(28, 33, 45, 0.95) 100%) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Reducir el espacio superior */
 .block-container {
     padding-top: 2rem !important;
 }
@@ -37,7 +44,6 @@ page_bg_img = """
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)
 
-# Título centrado con HTML
 st.markdown("<h1 style='text-align: center;'>Buscador de Vuelos Low-Cost ✈️</h1>", unsafe_allow_html=True)
 
 # --- BARRA LATERAL (CONFIGURACIÓN) ---
@@ -133,18 +139,16 @@ def consultar_api(orig, dest, fecha, solo_directos):
 def mostrar_tabla_con_metricas(df, titulo):
     st.subheader(titulo)
     if not df.empty:
-        # Tabla interactiva primero
         st.dataframe(df.head(5), hide_index=True, use_container_width=True)
         if len(df) > 5:
             with st.expander(f"Ver los {len(df)-5} resultados restantes"):
                 st.dataframe(df.iloc[5:].reset_index(drop=True), hide_index=True, use_container_width=True)
         
-        # Tarjeta destacada debajo de la tabla
-        st.markdown("<br>", unsafe_allow_html=True) # Espacio visual
+        st.markdown("<br>", unsafe_allow_html=True)
         mejor_precio = df.iloc[0]["Precio"]
         mejor_aerolinea = df.iloc[0]["Aerolínea"]
-        st.metric(label="🏆 Opción más barata para este trayecto", value=mejor_precio, delta=mejor_aerolinea, delta_color="off")
-        st.markdown("<br><br>", unsafe_allow_html=True) # Separación extra entre trayectos
+        st.metric(label="🏆 Opción más barata", value=mejor_precio, delta=mejor_aerolinea, delta_color="off")
+        st.markdown("<br><br>", unsafe_allow_html=True)
     else:
         st.warning("No se encontraron vuelos para esta ruta con los filtros seleccionados.")
 

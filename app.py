@@ -4,7 +4,7 @@ from serpapi import GoogleSearch
 import datetime
 import airportsdata
 
-# Optimización: Cacheamos la base de datos de aeropuertos para que la app cargue más rápido
+# Optimización: Cacheamos la base de datos de aeropuertos
 @st.cache_data
 def load_airports():
     return airportsdata.load('IATA')
@@ -17,6 +17,8 @@ def obtener_pais(iata_code):
     except:
         return ""
 
+# Configuración para que la app ocupe más ancho por defecto
+st.set_page_config(page_title="Buscador Vuelos", layout="wide")
 st.title("Buscador de Vuelos Low-Cost ✈️")
 
 # --- BARRA LATERAL (CONFIGURACIÓN) ---
@@ -24,17 +26,19 @@ st.sidebar.header("Configuración de Búsqueda")
 origen = st.sidebar.text_input("Origen (IATA)", value="MAD").upper()
 destino = st.sidebar.text_input("Destino (IATA)", value="BER").upper()
 
-fecha_ida = st.sidebar.date_input("Fecha de Ida")
+hoy = datetime.date.today()
+
+# El valor mínimo es hoy para evitar seleccionar días pasados
+fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=hoy)
 buscar_vuelta = st.sidebar.checkbox("Añadir vuelo de vuelta")
 
 if buscar_vuelta:
-    fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta")
+    # Por defecto coge la fecha de ida y no permite seleccionar una anterior a la ida
+    fecha_vuelta = st.sidebar.date_input("Fecha de Vuelta", min_value=fecha_ida, value=fecha_ida)
 
 vuelo_directo = st.sidebar.checkbox("Vuelo Directo (Sin escalas)", value=False)
 
-# Botón de búsqueda también en la barra lateral
 buscar_btn = st.sidebar.button("Buscar vuelos", type="primary", use_container_width=True)
-
 
 # --- LÓGICA DE BÚSQUEDA ---
 def consultar_api(orig, dest, fecha, solo_directos):
@@ -50,7 +54,6 @@ def consultar_api(orig, dest, fecha, solo_directos):
         "api_key": api_key
     }
     
-    # Añadir filtro nativo de Google Flights (1 = Solo vuelos directos)
     if solo_directos:
         params["stops"] = "1"
         
@@ -68,8 +71,6 @@ def consultar_api(orig, dest, fecha, solo_directos):
         if not trayectos: continue
             
         escalas = len(trayectos) - 1
-        
-        # Filtro de seguridad secundario
         if solo_directos and escalas > 0:
             continue
             
@@ -99,8 +100,6 @@ def consultar_api(orig, dest, fecha, solo_directos):
         
     if vuelos_limpios:
         df = pd.DataFrame(vuelos_limpios)
-        
-        # Calcular tiempo total (Llegada - Salida)
         try:
             inicio = pd.to_datetime(df['Fecha Salida'] + ' ' + df['Hora Salida'])
             fin = pd.to_datetime(df['Fecha Llegada'] + ' ' + df['Hora Llegada'])
@@ -109,19 +108,18 @@ def consultar_api(orig, dest, fecha, solo_directos):
         except:
             df['Tiempo Total'] = "N/A"
             
-        # Reordenar las columnas y mostrar primero el precio más bajo
         df = df.sort_values(by="Precio (€)").reset_index(drop=True)
         return df
     return pd.DataFrame()
 
-
 def mostrar_tabla(df, titulo):
     st.subheader(titulo)
     if not df.empty:
-        st.dataframe(df.head(5))
+        # Se oculta el índice (#) y se fuerza a ocupar todo el ancho disponible
+        st.dataframe(df.head(5), hide_index=True, use_container_width=True)
         if len(df) > 5:
             with st.expander(f"Ver los {len(df)-5} resultados restantes"):
-                st.dataframe(df.iloc[5:].reset_index(drop=True))
+                st.dataframe(df.iloc[5:].reset_index(drop=True), hide_index=True, use_container_width=True)
     else:
         st.warning("No se encontraron vuelos para esta ruta con los filtros seleccionados.")
 

@@ -24,15 +24,17 @@ DB_PATH = Path("flight_history.sqlite3")
 page_bg_img = """
 <style>
 .stApp {
-    background-image: linear-gradient(rgba(14, 17, 23, 0.75), rgba(14, 17, 23, 0.85)),
-    url("https://images.unsplash.com/photo-1542296332-2e4473faf563?q=80&w=2000&auto=format&fit=crop");
+    background-image: linear-gradient(
+        color-mix(in srgb, var(--background-color) 85%, transparent), 
+        color-mix(in srgb, var(--background-color) 85%, transparent)
+    ), url("https://images.unsplash.com/photo-1542296332-2e4473faf563?q=80&w=2000&auto=format&fit=crop");
     background-size: cover;
     background-position: center;
     background-attachment: fixed;
 }
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, rgba(17, 21, 30, 0.95) 0%, rgba(28, 33, 45, 0.95) 100%) !important;
-    border-right: 1px solid rgba(255, 255, 255, 0.05);
+    background: color-mix(in srgb, var(--secondary-background-color) 95%, transparent) !important;
+    border-right: 1px solid color-mix(in srgb, var(--text-color) 10%, transparent);
 }
 .block-container {
     padding-top: 2rem !important;

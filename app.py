@@ -23,6 +23,7 @@ DB_PATH = Path("flight_history.sqlite3")
 
 page_bg_img = """
 <style>
+/* --- TEMA OSCURO (Diseño base con avión) --- */
 .stApp {
     background-image: linear-gradient(rgba(14, 17, 23, 0.75), rgba(14, 17, 23, 0.85)),
     url("https://images.unsplash.com/photo-1542296332-2e4473faf563?q=80&w=2000&auto=format&fit=crop");
@@ -46,6 +47,18 @@ page_bg_img = """
 }
 [data-testid="stSidebarUserContent"] {
     padding-top: 1rem !important;
+}
+
+/* --- TEMA CLARO (Fondos sólidos y limpios) --- */
+@media (prefers-color-scheme: light) {
+    .stApp {
+        background-image: none !important;
+        background-color: var(--background-color) !important;
+    }
+    [data-testid="stSidebar"] {
+        background: var(--secondary-background-color) !important;
+        border-right: 1px solid rgba(0, 0, 0, 0.1) !important;
+    }
 }
 </style>
 """

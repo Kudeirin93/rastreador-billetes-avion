@@ -416,34 +416,44 @@ def obtener_lista_aeropuertos(iata_base, radio_km):
 def init_db():
     try:
         with sqlite3.connect(DB_PATH) as conn:
+            # ... (Tus tablas anteriores siguen aquí) ...
+            
+            # NUEVA TABLA: Búsquedas guardadas
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS price_history (
+                CREATE TABLE IF NOT EXISTS saved_searches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    origin TEXT NOT NULL,
-                    destination TEXT NOT NULL,
-                    outbound_date TEXT NOT NULL,
-                    return_date TEXT,
-                    travel_class TEXT NOT NULL,
-                    adults INTEGER NOT NULL,
-                    price REAL NOT NULL
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS price_alerts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL,
-                    origin TEXT NOT NULL,
-                    destination TEXT NOT NULL,
-                    outbound_date TEXT NOT NULL,
-                    return_date TEXT,
-                    max_price REAL NOT NULL,
-                    active INTEGER NOT NULL DEFAULT 1
+                    name TEXT NOT NULL,
+                    config TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 )
             """)
             conn.commit()
     except Exception:
         pass
+
+# --- NUEVAS FUNCIONES DE MEMORIA ---
+def guardar_busqueda(name, config_dict):
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO saved_searches (name, config, created_at) VALUES (?, ?, ?)",
+                (name, json.dumps(config_dict), datetime.datetime.now().isoformat())
+            )
+            conn.commit()
+    except Exception: pass
+
+def cargar_busquedas():
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            return pd.read_sql_query("SELECT id, name, config FROM saved_searches ORDER BY created_at DESC", conn)
+    except Exception: return pd.DataFrame()
+
+def eliminar_busqueda(b_id):
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("DELETE FROM saved_searches WHERE id = ?", (int(b_id),))
+            conn.commit()
+    except Exception: pass
 
 
 def guardar_precio(origin, destination, outbound_date, return_date, travel_class, adults, price):

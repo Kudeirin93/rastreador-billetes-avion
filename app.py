@@ -103,6 +103,35 @@ div[role="listbox"] {
     white-space: normal !important;
     line-height: 1.2 !important;
 }
+
+/* 8. Eliminar los grandes espacios en blanco que Streamlit añade por
+      defecto entre bloques del sidebar (gap entre widgets, márgenes de
+      los separadores "---" y de los subtítulos), para que toda la
+      configuración quepa sin apenas scroll. */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+    gap: 0.45rem !important;
+}
+[data-testid="stSidebar"] [data-testid="stElementContainer"],
+[data-testid="stSidebar"] .element-container {
+    margin-bottom: 0 !important;
+}
+[data-testid="stSidebar"] hr {
+    margin: 0.3rem 0 !important;
+}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
+    margin-top: 0.1rem !important;
+    margin-bottom: 0.1rem !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+    margin-top: -0.3rem !important;
+    margin-bottom: 0 !important;
+}
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
+    margin-bottom: 0.1rem !important;
+}
 </style>
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)
@@ -243,13 +272,16 @@ MONTH_NAMES = {
 
 def build_explore_months():
     today = datetime.date.today()
-    months = {"Cualquier mes (próximos 6 meses)": 0}
+    months = {}
     for offset in range(6):
         month_num = ((today.month - 1 + offset) % 12) + 1
         year = today.year + ((today.month - 1 + offset) // 12)
         months[f"{MONTH_NAMES[month_num]} {year}"] = month_num
     return months
 
+# Meses concretos disponibles para explorar (próximos 6 meses). Se eligen
+# uno o varios (no todos por defecto): es poco realista que el usuario
+# tenga disponibilidad los 6 meses completos.
 MONTHS = build_explore_months()
 
 
@@ -1045,9 +1077,16 @@ if modo == "🔎 Buscar vuelos":
     )
     flex_ida = col_flex_i.checkbox("Flex. ida", value=False)
 
-    # Fechas flexibles de vuelta sólo aplica en modo ida y vuelta: se añade
-    # como fila extra (condicional) en vez de forzar una 3ª columna estrecha.
-    flex_vuelta = st.sidebar.checkbox("Fechas flexibles de vuelta", value=False) if buscar_vuelta else False
+    # Fechas flexibles de vuelta: casilla SIEMPRE visible (no desaparece),
+    # simplemente se deshabilita si no hay "Ida y vuelta" activado.
+    flex_vuelta = st.sidebar.checkbox(
+        "Fechas flexibles de vuelta",
+        value=False,
+        disabled=not buscar_vuelta,
+        help=None if buscar_vuelta else "Actívala marcando antes 'Ida y vuelta'.",
+    )
+    if not buscar_vuelta:
+        flex_vuelta = False
 
     radio_ida = st.sidebar.slider("Días de margen (ida)", min_value=1, max_value=5, value=3) if flex_ida else 0
     radio_vuelta = st.sidebar.slider("Días de margen (vuelta)", min_value=1, max_value=5, value=3) if (buscar_vuelta and flex_vuelta) else 0
@@ -1316,71 +1355,127 @@ else:
     st.caption("Busca destinos flexibles desde tu aeropuerto, filtrando por presupuesto y tipo de viaje.")
 
     st.sidebar.header("Explorar destinos")
-    explore_origin = st.sidebar.text_input("Aeropuerto de salida (IATA)", value="MAD", key="explore_origin").upper().strip()
-    explore_budget = st.sidebar.number_input("Presupuesto máximo de vuelo (€)", min_value=20, max_value=5000, value=150, step=10)
-    explore_month_label = st.sidebar.selectbox("Mes", list(MONTHS.keys()), index=0)
-    explore_duration_label = st.sidebar.selectbox("Duración del viaje", list(EXPLORE_DURATION.keys()), index=1)
-    explore_interest_label = st.sidebar.selectbox("Tipo de destino", list(EXPLORE_INTEREST.keys()), index=0)
-    explore_class_label = st.sidebar.selectbox("Clase", list(CABIN_CLASSES.keys()), index=0, key="explore_class")
-    explore_adults = st.sidebar.number_input("Adultos", min_value=1, max_value=9, value=1, key="explore_adults")
-    explore_children = st.sidebar.number_input("Niños", min_value=0, max_value=8, value=0, key="explore_children")
-    explore_bags = st.sidebar.number_input("Equipajes de mano", min_value=0, max_value=int(explore_adults + explore_children), value=0, key="explore_bags")
-    explore_stops_label = st.sidebar.selectbox("Escalas", list(STOPS_OPTIONS.keys()), index=0, key="explore_stops")
-    explore_max_duration = st.sidebar.number_input("Duración máxima del vuelo (h)", min_value=0, max_value=30, value=0, key="explore_max_duration", help="0 = sin límite.")
-    explore_include = st.sidebar.multiselect("Incluir solo aerolíneas", options=sorted(AIRLINES.keys()), key="explore_include")
-    explore_exclude = st.sidebar.multiselect("Excluir aerolíneas", options=sorted(AIRLINES.keys()), key="explore_exclude")
 
-    if explore_include and explore_exclude:
-        st.sidebar.error("No puedes incluir y excluir aerolíneas simultáneamente.")
+    # Fila 1: aeropuerto de salida y presupuesto.
+    col_org, col_bud = st.sidebar.columns(2)
+    explore_origin = col_org.text_input("Salida (IATA)", value="MAD", key="explore_origin").upper().strip()
+    explore_budget = col_bud.number_input("Presup. máx. (€)", min_value=20, max_value=5000, value=150, step=10)
+
+    # Meses a explorar: selección múltiple de meses concretos en vez de un
+    # único desplegable — es poco probable que el usuario tenga
+    # disponibilidad los 6 meses completos.
+    explore_month_labels = st.sidebar.multiselect(
+        "Meses a explorar",
+        options=list(MONTHS.keys()),
+        default=list(MONTHS.keys())[:1],
+        help="Elige uno o varios meses concretos; se consultan todos y se combinan los resultados.",
+    )
+
+    # Fila 2: duración del viaje y tipo de destino.
+    col_dur, col_int = st.sidebar.columns(2)
+    explore_duration_label = col_dur.selectbox("Duración", list(EXPLORE_DURATION.keys()), index=1)
+    explore_interest_label = col_int.selectbox("Tipo destino", list(EXPLORE_INTEREST.keys()), index=0)
+
+    # Fila 3: clase y escalas.
+    col_clase, col_esc = st.sidebar.columns(2)
+    explore_class_label = col_clase.selectbox("Clase", list(CABIN_CLASSES.keys()), index=0, key="explore_class")
+    explore_stops_label = col_esc.selectbox("Escalas", list(STOPS_OPTIONS.keys()), index=0, key="explore_stops")
+
+    # Fila 4: adultos y niños.
+    col_ad, col_ni = st.sidebar.columns(2)
+    explore_adults = col_ad.number_input("Adultos", min_value=1, max_value=9, value=1, key="explore_adults")
+    explore_children = col_ni.number_input("Niños", min_value=0, max_value=8, value=0, key="explore_children")
+
+    # Fila 5: equipaje de mano y duración máxima del vuelo.
+    col_bags, col_maxdur = st.sidebar.columns(2)
+    explore_bags = col_bags.number_input("Equip. mano", min_value=0, max_value=int(explore_adults + explore_children), value=0, key="explore_bags")
+    explore_max_duration = col_maxdur.number_input("Dur. máx. (h)", min_value=0, max_value=30, value=0, key="explore_max_duration", help="0 = sin límite.")
+
+    # Aerolíneas: filtro secundario, plegado para no ocupar espacio fijo.
+    with st.sidebar.expander("Incluir / excluir aerolíneas"):
+        explore_include = st.multiselect("Incluir solo aerolíneas", options=sorted(AIRLINES.keys()), key="explore_include")
+        explore_exclude = st.multiselect("Excluir aerolíneas", options=sorted(AIRLINES.keys()), key="explore_exclude")
+        if explore_include and explore_exclude:
+            st.error("No puedes incluir y excluir aerolíneas simultáneamente.")
 
     mostrar_consumo_api(1)
     explore_btn = st.sidebar.button(
         "🌍 Buscar destinos",
         type="primary",
         use_container_width=True,
-        disabled=bool(explore_include and explore_exclude),
+        disabled=bool(explore_include and explore_exclude) or not explore_month_labels,
     )
+    if not explore_month_labels:
+        st.sidebar.caption("⚠️ Elige al menos un mes para poder buscar.")
 
     if explore_btn:
-        params = {
-            "engine": "google_travel_explore",
-            "departure_id": explore_origin,
-            "type": "1",
-            "month": MONTHS[explore_month_label],
-            "travel_duration": EXPLORE_DURATION[explore_duration_label],
-            "travel_class": CABIN_CLASSES[explore_class_label],
-            "adults": int(explore_adults),
-            "children": int(explore_children),
-            "bags": int(explore_bags),
-            "max_price": int(explore_budget),
-            "currency": CURRENCY,
-            "hl": HL,
-            "gl": GL,
-        }
 
-        if STOPS_OPTIONS[explore_stops_label] != "0":
-            params["stops"] = STOPS_OPTIONS[explore_stops_label]
-        if explore_max_duration > 0:
-            params["max_duration"] = int(explore_max_duration * 60)
-
-        interest = EXPLORE_INTEREST[explore_interest_label]
-        if interest:
-            params["interest"] = interest
-
-        include_codes = airline_codes(explore_include)
-        exclude_codes = airline_codes(explore_exclude)
-        if include_codes:
-            params["include_airlines"] = ",".join(include_codes)
-        elif exclude_codes:
-            params["exclude_airlines"] = ",".join(exclude_codes)
+        def build_explore_params(month_num):
+            params = {
+                "engine": "google_travel_explore",
+                "departure_id": explore_origin,
+                "type": "1",
+                "month": month_num,
+                "travel_duration": EXPLORE_DURATION[explore_duration_label],
+                "travel_class": CABIN_CLASSES[explore_class_label],
+                "adults": int(explore_adults),
+                "children": int(explore_children),
+                "bags": int(explore_bags),
+                "max_price": int(explore_budget),
+                "currency": CURRENCY,
+                "hl": HL,
+                "gl": GL,
+            }
+            if STOPS_OPTIONS[explore_stops_label] != "0":
+                params["stops"] = STOPS_OPTIONS[explore_stops_label]
+            if explore_max_duration > 0:
+                params["max_duration"] = int(explore_max_duration * 60)
+            interest = EXPLORE_INTEREST[explore_interest_label]
+            if interest:
+                params["interest"] = interest
+            include_codes = airline_codes(explore_include)
+            exclude_codes = airline_codes(explore_exclude)
+            if include_codes:
+                params["include_airlines"] = ",".join(include_codes)
+            elif exclude_codes:
+                params["exclude_airlines"] = ",".join(exclude_codes)
+            return params
 
         try:
             with st.status("Buscando destinos...", expanded=True) as status:
-                params_json = json.dumps(params, sort_keys=True, separators=(",", ":"))
-                result = consultar_explore(params_json)
-                explore_df = explorar_a_df(result)
+                dfs = []
+                last_result = None
+                for mes_label in explore_month_labels:
+                    status.update(label=f"Consultando {mes_label}...")
+                    params = build_explore_params(MONTHS[mes_label])
+                    params_json = json.dumps(params, sort_keys=True, separators=(",", ":"))
+                    result = consultar_explore(params_json)
+                    last_result = result
+                    df_mes = explorar_a_df(result)
+                    if not df_mes.empty:
+                        df_mes = df_mes.copy()
+                        df_mes["Mes consultado"] = mes_label
+                        dfs.append(df_mes)
+
+                if dfs:
+                    explore_df = pd.concat(dfs, ignore_index=True)
+                    # Si un mismo destino aparece en varios meses, nos quedamos
+                    # con la combinación más barata.
+                    if "Vuelo (€)" in explore_df.columns:
+                        explore_df = (
+                            explore_df.sort_values("Vuelo (€)", na_position="last")
+                            .drop_duplicates(subset=["Destino", "Aeropuerto"], keep="first")
+                            .reset_index(drop=True)
+                        )
+                else:
+                    explore_df = pd.DataFrame()
+
                 status.update(label="¡Destinos encontrados!", state="complete", expanded=False)
-            st.session_state["explore_search"] = {"params": params, "result": result, "df": explore_df}
+            st.session_state["explore_search"] = {
+                "months": explore_month_labels,
+                "result": last_result,
+                "df": explore_df,
+            }
         except Exception as exc:
             st.error(f"Error consultando Google Travel Explore: {exc}")
             st.session_state.pop("explore_search", None)
@@ -1393,21 +1488,22 @@ else:
         else:
             if explore_df["Vuelo (€)"].notna().any():
                 st.metric("💸 Destino más barato", f"{int(explore_df['Vuelo (€)'].dropna().min())} €")
+            columnas_explore = [
+                "Destino",
+                "País",
+                "Aeropuerto",
+                "Ida",
+                "Vuelta",
+                "Vuelo (€)",
+                "Hotel/noche",
+                "Duración",
+                "Escalas",
+                "Aerolínea",
+            ]
+            if "Mes consultado" in explore_df.columns and len(explore_state.get("months", [])) > 1:
+                columnas_explore.append("Mes consultado")
             st.dataframe(
-                explore_df[
-                    [
-                        "Destino",
-                        "País",
-                        "Aeropuerto",
-                        "Ida",
-                        "Vuelta",
-                        "Vuelo (€)",
-                        "Hotel/noche",
-                        "Duración",
-                        "Escalas",
-                        "Aerolínea",
-                    ]
-                ],
+                explore_df[columnas_explore],
                 hide_index=True,
                 use_container_width=True,
             )

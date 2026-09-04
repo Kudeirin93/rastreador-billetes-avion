@@ -50,7 +50,8 @@ page_bg_img = """
     padding-bottom: 0rem !important;
 }
 [data-testid="stSidebarUserContent"] {
-    padding-top: 1rem !important;
+    padding-top: 0.4rem !important;
+    padding-bottom: 0.4rem !important;
 }
 
 /* 4. Forzar texto claro sobre el fondo oscuro, independientemente de si el
@@ -121,9 +122,14 @@ div[role="listbox"] {
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
     margin-top: 0.1rem !important;
-    margin-bottom: 0.1rem !important;
+    margin-bottom: 0.4rem !important;
     padding-top: 0 !important;
     padding-bottom: 0 !important;
+}
+/* La primera cabecera ("Menú Principal") no necesita margen superior: el
+   padding-top del propio contenedor del sidebar ya da aire suficiente. */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:first-child h2 {
+    margin-top: 0 !important;
 }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
     margin-top: -0.3rem !important;
@@ -932,7 +938,7 @@ def explorar_a_df(result):
 # ============================================================
 
 st.sidebar.markdown(
-    "<h2 style='margin-top: -40px;'>✈️ Menú Principal</h2>",
+    "<h2>✈️ Menú Principal</h2>",
     unsafe_allow_html=True
 )
 modo = st.sidebar.radio("Modo", ["🔎 Buscar vuelos", "🌍 Inspírame"], index=0)

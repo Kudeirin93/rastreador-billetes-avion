@@ -105,10 +105,7 @@ div[role="listbox"] {
     line-height: 1.2 !important;
 }
 
-/* 8. Eliminar los grandes espacios en blanco que Streamlit añade por
-      defecto entre bloques del sidebar (gap entre widgets, márgenes de
-      los separadores "---" y de los subtítulos), para que toda la
-      configuración quepa sin apenas scroll. */
+/* 8. Ajustar espacios en blanco del sidebar para mejor legibilidad */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
     gap: 0.45rem !important;
 }
@@ -117,12 +114,12 @@ div[role="listbox"] {
     margin-bottom: 0 !important;
 }
 [data-testid="stSidebar"] hr {
-    margin: 0.3rem 0 !important;
+    margin: 1.2rem 0 1rem 0 !important; /* Más espacio alrededor de las líneas separadoras */
 }
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
-    margin-top: 0 !important;
-    margin-bottom: 0.4rem !important;
+    margin-top: 0.5rem !important; /* Espacio encima del título */
+    margin-bottom: 1.2rem !important; /* Espacio entre el título y las funcionalidades */
     padding-top: 0 !important;
     padding-bottom: 0 !important;
     line-height: 1.15 !important;

@@ -105,9 +105,9 @@ div[role="listbox"] {
     line-height: 1.2 !important;
 }
 
-/* 8. Ajustar márgenes y arreglar solapamiento de widgets */
+/* 8. Ajustar márgenes de los Títulos del Sidebar (Espacio abajo) */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-    gap: 0.8rem !important; /* Da un respiro necesario entre las filas */
+    gap: 0.8rem !important; /* Espacio vital entre filas para evitar solapamientos */
 }
 [data-testid="stSidebar"] hr {
     margin: 1.2rem 0 1rem 0 !important;
@@ -115,19 +115,20 @@ div[role="listbox"] {
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
     margin-top: 0.5rem !important;
-    margin-bottom: 0.8rem !important; /* Espacio limpio debajo de los títulos */
+    margin-bottom: 0.8rem !important;
     padding-top: 0 !important;
     padding-bottom: 0 !important;
     line-height: 1.15 !important;
 }
 
-/* 9. ELIMINAR EL HUECO BLANCO SUPERIOR DEL SIDEBAR */
+/* 9. SUBIR EL TÍTULO PRINCIPAL (De forma segura sin romper columnas) */
 [data-testid="stSidebarUserContent"] {
     padding-top: 0rem !important;
     padding-bottom: 0.4rem !important;
 }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child {
-    margin-top: -4.8rem !important; /* Mantiene el Menú Principal pegado arriba */
+/* Movemos SOLO el texto h2 del primer bloque hacia arriba, dejando los inputs tranquilos */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child h2 {
+    margin-top: -3.5rem !important; 
 }
 </style>
 """

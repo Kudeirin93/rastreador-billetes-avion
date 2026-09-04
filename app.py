@@ -132,6 +132,13 @@ div[role="listbox"] {
     margin-bottom: 0.1rem !important;
 }
 </style>
+/* 9. Eliminar espacio en blanco encima del primer título del panel lateral */
+[data-testid="stSidebarUserContent"] {
+    padding-top: 0rem !important; 
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child {
+    margin-top: -2.5rem !important;
+}
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)
 st.markdown("<h1 style='text-align: center;'>Buscador de Vuelos Low-Cost ✈️</h1>", unsafe_allow_html=True)
@@ -931,7 +938,7 @@ def explorar_a_df(result):
 # ============================================================
 
 st.sidebar.markdown(
-    "<h2 style='margin-top: -1.5rem !important;'>✈️ Menú Principal</h2>",
+    "<h2>✈️ Menú Principal</h2>",
     unsafe_allow_html=True
 )
 modo = st.sidebar.radio("Modo", ["🔎 Buscar vuelos", "🌍 Inspírame"], index=0)

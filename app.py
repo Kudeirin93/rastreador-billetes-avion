@@ -145,15 +145,21 @@ def load_airports():
 
 airports = load_airports()
 
-# --- NUEVA FUNCIÓN: Generar lista de ciudades/aeropuertos ---
+# --- NUEVA FUNCIÓN: Generar lista limpia (Solo Ciudad y País) ---
 @st.cache_data
 def obtener_opciones_aeropuertos():
     opciones = []
     for iata, info in airports.items():
         if len(iata) == 3 and info.get('city'):
-            # Formato: "Ciudad - Nombre del Aeropuerto (IATA)"
-            opciones.append(f"{info['city']} - {info.get('name', 'Aeropuerto')} ({iata})")
-    return sorted(opciones)
+            ciudad = info.get('city', '').strip()
+            pais = info.get('country', '').strip()
+            
+            # Formato estricto: "Ciudad, País (IATA)" - Sin nombre del aeropuerto
+            if ciudad:
+                opciones.append(f"{ciudad}, {pais} ({iata})")
+                
+    # Usamos set() para eliminar posibles duplicados exactos y luego ordenamos
+    return sorted(list(set(opciones)))
 
 opciones_busqueda = obtener_opciones_aeropuertos()
 

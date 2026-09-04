@@ -7,8 +7,6 @@ import urllib.request
 import json
 import math
 import sqlite3
-import difflib
-import unicodedata
 from pathlib import Path
 
 # ============================================================
@@ -85,10 +83,17 @@ page_bg_img = """
 
 /* 6. Desplegables de origen/destino: mostrar el triple de opciones antes
       de necesitar scroll (por defecto Streamlit limita el listbox a
-      300px, unas 7-8 filas). */
+      300px, unas 7-8 filas). Se cubren ambas variantes del componente
+      selectbox que ha usado Streamlit (versiones recientes basadas en
+      react-aria y versiones anteriores basadas en BaseWeb), además de un
+      selector genérico por si cambia de nuevo en el futuro. */
 [data-testid="stSelectboxVirtualDropdown"],
-[data-testid="stSelectboxVirtualDropdown"] [role="listbox"] {
-    max-height: 900px !important;
+[data-testid="stSelectboxVirtualDropdown"] [role="listbox"],
+[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="menu"],
+ul[role="listbox"],
+div[role="listbox"] {
+    max-height: min(900px, 85vh) !important;
 }
 
 /* 7. En columnas estrechas (checkboxes con tooltip de ayuda), el texto de
@@ -133,57 +138,16 @@ def buscar_indice_por_iata(iata, opciones):
     return 0
 
 
-def _normalizar_texto(texto):
-    """Minúsculas y sin acentos, para comparar sin importar tildes/mayúsculas."""
-    descompuesto = unicodedata.normalize("NFKD", texto)
-    return "".join(c for c in descompuesto if not unicodedata.combining(c)).lower()
-
-
-def filtrar_aeropuertos(query, opciones, limite=40):
-    """Filtra la lista de aeropuertos por coincidencia de subcadena (ciudad,
-    aeropuerto o código IATA); si no hay coincidencias exactas, recurre a un
-    fuzzy match para tolerar pequeñas erratas."""
-    query = (query or "").strip()
-    if not query:
-        return opciones[:limite]
-
-    q_norm = _normalizar_texto(query)
-    coincidencias = [o for o in opciones if q_norm in _normalizar_texto(o)]
-    if coincidencias:
-        return coincidencias[:limite]
-
-    return difflib.get_close_matches(query, opciones, n=limite, cutoff=0.4)
-
-
 def selector_aeropuerto(label, iata_por_defecto, key_prefix):
-    """Cuadro de búsqueda + desplegable acotado: el usuario escribe texto
-    libre (ciudad, aeropuerto o IATA, con o sin tildes) y la lista de abajo
-    sólo muestra las coincidencias, en vez de los ~7000 aeropuertos enteros."""
-    opcion_por_defecto = opciones_busqueda[buscar_indice_por_iata(iata_por_defecto, opciones_busqueda)]
-
-    query = st.sidebar.text_input(
-        label,
-        value=opcion_por_defecto,
-        key=f"{key_prefix}_query",
-        help="Escribe parte del nombre de la ciudad, el aeropuerto o el código IATA para filtrar la lista.",
-    )
-
-    filtradas = filtrar_aeropuertos(query, opciones_busqueda)
-    if not filtradas:
-        st.sidebar.caption("Sin coincidencias para esa búsqueda.")
-        filtradas = [opcion_por_defecto]
-
-    select_key = f"{key_prefix}_select"
-    index = 0
-    if select_key in st.session_state and st.session_state[select_key] in filtradas:
-        index = filtradas.index(st.session_state[select_key])
-
+    """Desplegable nativo de Streamlit (una sola fila). El propio combobox
+    ya filtra por subcadena a medida que se escribe (ciudad, nombre del
+    aeropuerto o código IATA, en cualquier posición del texto) — se
+    comprobó que no hace falta un cuadro de búsqueda aparte."""
     return st.sidebar.selectbox(
-        "Resultados",
-        options=filtradas,
-        index=index,
-        key=select_key,
-        label_visibility="collapsed",
+        label,
+        options=opciones_busqueda,
+        index=buscar_indice_por_iata(iata_por_defecto, opciones_busqueda),
+        key=f"{key_prefix}_select",
     )
 
 AIRLINES = {
@@ -1011,19 +975,20 @@ if modo == "🔎 Buscar vuelos":
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("👥 Pasajeros y cabina")
-    # Fila 1: los 4 contadores de personas, en horizontal.
-    col_ad, col_ni, col_ba, col_br = st.sidebar.columns(4)
+    # (Se han eliminado los bebés con asiento/en regazo a petición del usuario.)
+    # Fila 1: adultos y niños.
+    col_ad, col_ni = st.sidebar.columns(2)
     adultos = col_ad.number_input("Adultos", min_value=1, max_value=9, value=1)
     ninos = col_ni.number_input("Niños", min_value=0, max_value=8, value=0)
-    bebes_asiento = col_ba.number_input("Beb. asiento", min_value=0, max_value=4, value=0)
-    bebes_regazo = col_br.number_input("Beb. regazo", min_value=0, max_value=4, value=0)
+    bebes_asiento = 0
+    bebes_regazo = 0
 
     # Fila 2: clase y equipaje de mano.
     col_clase, col_equip = st.sidebar.columns(2)
     clase_sel = col_clase.selectbox("Clase de Cabina", list(CABIN_CLASSES.keys()), index=0)
-    viajeros_con_equipaje = int(adultos + ninos + bebes_asiento)
+    viajeros_con_equipaje = int(adultos + ninos)
     equipajes_mano = col_equip.number_input(
-        "Equipajes de mano",
+        "Equipaje mano",
         min_value=0,
         max_value=max(0, viajeros_con_equipaje),
         value=0,

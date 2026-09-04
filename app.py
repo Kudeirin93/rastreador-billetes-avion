@@ -931,7 +931,7 @@ def explorar_a_df(result):
 # ============================================================
 
 st.sidebar.markdown(
-    "<h2>✈️ Menú Principal</h2>",
+    "<h2 style='margin-top: -1.5rem !important;'>✈️ Menú Principal</h2>",
     unsafe_allow_html=True
 )
 modo = st.sidebar.radio("Modo", ["🔎 Buscar vuelos", "🌍 Inspírame"], index=0)

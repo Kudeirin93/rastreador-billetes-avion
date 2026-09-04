@@ -105,39 +105,29 @@ div[role="listbox"] {
     line-height: 1.2 !important;
 }
 
-/* 8. Ajustar espacios en blanco del sidebar para mejor legibilidad */
+/* 8. Ajustar márgenes y arreglar solapamiento de widgets */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-    gap: 0.45rem !important;
-}
-[data-testid="stSidebar"] [data-testid="stElementContainer"],
-[data-testid="stSidebar"] .element-container {
-    margin-bottom: 0 !important;
+    gap: 0.8rem !important; /* Da un respiro necesario entre las filas */
 }
 [data-testid="stSidebar"] hr {
-    margin: 1.2rem 0 1rem 0 !important; /* Más espacio alrededor de las líneas separadoras */
+    margin: 1.2rem 0 1rem 0 !important;
 }
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
-    margin-top: 0.5rem !important; /* Espacio encima del título */
-    margin-bottom: 1.2rem !important; /* Espacio entre el título y las funcionalidades */
+    margin-top: 0.5rem !important;
+    margin-bottom: 0.8rem !important; /* Espacio limpio debajo de los títulos */
     padding-top: 0 !important;
     padding-bottom: 0 !important;
     line-height: 1.15 !important;
 }
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
-    margin-top: -0.3rem !important;
-    margin-bottom: 0 !important;
-}
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
-    margin-bottom: 0.1rem !important;
-}
+
 /* 9. ELIMINAR EL HUECO BLANCO SUPERIOR DEL SIDEBAR */
 [data-testid="stSidebarUserContent"] {
     padding-top: 0rem !important;
     padding-bottom: 0.4rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child {
-    margin-top: -4.0rem !important;
+    margin-top: -4.8rem !important; /* Mantiene el Menú Principal pegado arriba */
 }
 </style>
 """

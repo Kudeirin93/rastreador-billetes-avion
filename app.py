@@ -136,7 +136,7 @@ st.markdown(page_bg_img, unsafe_allow_html=True)
 st.markdown("<h1 style='text-align: center;'>Buscador de Vuelos Low-Cost ✈️</h1>", unsafe_allow_html=True)
 
 # ============================================================
-# PAISES
+# DATOS AUXILIARES
 # ============================================================
 
 # Diccionario de conversión de códigos ISO a nombres de países en español
@@ -180,14 +180,20 @@ PAISES_ES = {
 }
 
 @st.cache_data
+def load_airports():
+    return airportsdata.load("IATA")
+
+airports = load_airports()
+
+@st.cache_data
 def obtener_opciones_aeropuertos():
     opciones = []
     for iata, info in airports.items():
         if len(iata) == 3 and info.get('city'):
             ciudad = info.get('city', '').strip()
-            codigo_pais = info.get('country', '').strip()
+            codigo_pais = info.get('country', '').strip().upper()
             
-            # Traducimos el código ISO al español (si no existe, dejamos el código por defecto)
+            # Traducimos el código ISO al español
             nombre_pais = PAISES_ES.get(codigo_pais, codigo_pais)
             
             if ciudad:
@@ -196,13 +202,6 @@ def obtener_opciones_aeropuertos():
     return sorted(list(set(opciones)))
 
 opciones_busqueda = obtener_opciones_aeropuertos()
-# ============================================================
-# DATOS AUXILIARES
-# ============================================================
-
-@st.cache_data
-def load_airports():
-    return airportsdata.load("IATA")
 
 airports = load_airports()
 

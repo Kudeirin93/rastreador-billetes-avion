@@ -7,6 +7,8 @@ import urllib.request
 import json
 import math
 import sqlite3
+import difflib
+import unicodedata
 from pathlib import Path
 
 # ============================================================
@@ -80,6 +82,22 @@ page_bg_img = """
 [data-testid="stDateInputField"] span[data-type="literal"] {
     color: #262730 !important;
 }
+
+/* 6. Desplegables de origen/destino: mostrar el triple de opciones antes
+      de necesitar scroll (por defecto Streamlit limita el listbox a
+      300px, unas 7-8 filas). */
+[data-testid="stSelectboxVirtualDropdown"],
+[data-testid="stSelectboxVirtualDropdown"] [role="listbox"] {
+    max-height: 900px !important;
+}
+
+/* 7. En columnas estrechas (checkboxes con tooltip de ayuda), el texto de
+      la etiqueta no debe cortarse: que haga salto de línea en vez de
+      recortarse con overflow. */
+[data-testid="stSidebar"] [data-testid="stCheckbox"] label p {
+    white-space: normal !important;
+    line-height: 1.2 !important;
+}
 </style>
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)
@@ -113,6 +131,60 @@ def buscar_indice_por_iata(iata, opciones):
         if opc.endswith(f"({iata})"):
             return i
     return 0
+
+
+def _normalizar_texto(texto):
+    """Minúsculas y sin acentos, para comparar sin importar tildes/mayúsculas."""
+    descompuesto = unicodedata.normalize("NFKD", texto)
+    return "".join(c for c in descompuesto if not unicodedata.combining(c)).lower()
+
+
+def filtrar_aeropuertos(query, opciones, limite=40):
+    """Filtra la lista de aeropuertos por coincidencia de subcadena (ciudad,
+    aeropuerto o código IATA); si no hay coincidencias exactas, recurre a un
+    fuzzy match para tolerar pequeñas erratas."""
+    query = (query or "").strip()
+    if not query:
+        return opciones[:limite]
+
+    q_norm = _normalizar_texto(query)
+    coincidencias = [o for o in opciones if q_norm in _normalizar_texto(o)]
+    if coincidencias:
+        return coincidencias[:limite]
+
+    return difflib.get_close_matches(query, opciones, n=limite, cutoff=0.4)
+
+
+def selector_aeropuerto(label, iata_por_defecto, key_prefix):
+    """Cuadro de búsqueda + desplegable acotado: el usuario escribe texto
+    libre (ciudad, aeropuerto o IATA, con o sin tildes) y la lista de abajo
+    sólo muestra las coincidencias, en vez de los ~7000 aeropuertos enteros."""
+    opcion_por_defecto = opciones_busqueda[buscar_indice_por_iata(iata_por_defecto, opciones_busqueda)]
+
+    query = st.sidebar.text_input(
+        label,
+        value=opcion_por_defecto,
+        key=f"{key_prefix}_query",
+        help="Escribe parte del nombre de la ciudad, el aeropuerto o el código IATA para filtrar la lista.",
+    )
+
+    filtradas = filtrar_aeropuertos(query, opciones_busqueda)
+    if not filtradas:
+        st.sidebar.caption("Sin coincidencias para esa búsqueda.")
+        filtradas = [opcion_por_defecto]
+
+    select_key = f"{key_prefix}_select"
+    index = 0
+    if select_key in st.session_state and st.session_state[select_key] in filtradas:
+        index = filtradas.index(st.session_state[select_key])
+
+    return st.sidebar.selectbox(
+        "Resultados",
+        options=filtradas,
+        index=index,
+        key=select_key,
+        label_visibility="collapsed",
+    )
 
 AIRLINES = {
     "Aer Lingus (EI)": "EI",
@@ -915,17 +987,9 @@ if modo == "🔎 Buscar vuelos":
 
     st.sidebar.header("Configuración de Búsqueda")
 
-    # Desplegables con buscador integrado
-    origen_seleccion = st.sidebar.selectbox(
-        "Origen (Ciudad o Aeropuerto)",
-        options=opciones_busqueda,
-        index=buscar_indice_por_iata(def_origen, opciones_busqueda)
-    )
-    destino_seleccion = st.sidebar.selectbox(
-        "Destino (Ciudad o Aeropuerto)",
-        options=opciones_busqueda,
-        index=buscar_indice_por_iata(def_destino, opciones_busqueda)
-    )
+    # Cuadro de búsqueda + desplegable acotado (filtran por subcadena o fuzzy match)
+    origen_seleccion = selector_aeropuerto("Origen (Ciudad o Aeropuerto)", def_origen, "origen")
+    destino_seleccion = selector_aeropuerto("Destino (Ciudad o Aeropuerto)", def_destino, "destino")
 
     # Extracción automática del código IATA (los 3 caracteres entre paréntesis al final)
     origen = origen_seleccion.split("(")[-1].replace(")", "").strip()
@@ -947,14 +1011,18 @@ if modo == "🔎 Buscar vuelos":
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("👥 Pasajeros y cabina")
-    adultos = st.sidebar.number_input("Adultos", min_value=1, max_value=9, value=1)
-    ninos = st.sidebar.number_input("Niños", min_value=0, max_value=8, value=0)
-    bebes_asiento = st.sidebar.number_input("Bebés con asiento", min_value=0, max_value=4, value=0)
-    bebes_regazo = st.sidebar.number_input("Bebés en regazo", min_value=0, max_value=4, value=0)
-    clase_sel = st.sidebar.selectbox("Clase de Cabina", list(CABIN_CLASSES.keys()), index=0)
+    # Fila 1: los 4 contadores de personas, en horizontal.
+    col_ad, col_ni, col_ba, col_br = st.sidebar.columns(4)
+    adultos = col_ad.number_input("Adultos", min_value=1, max_value=9, value=1)
+    ninos = col_ni.number_input("Niños", min_value=0, max_value=8, value=0)
+    bebes_asiento = col_ba.number_input("Beb. asiento", min_value=0, max_value=4, value=0)
+    bebes_regazo = col_br.number_input("Beb. regazo", min_value=0, max_value=4, value=0)
 
+    # Fila 2: clase y equipaje de mano.
+    col_clase, col_equip = st.sidebar.columns(2)
+    clase_sel = col_clase.selectbox("Clase de Cabina", list(CABIN_CLASSES.keys()), index=0)
     viajeros_con_equipaje = int(adultos + ninos + bebes_asiento)
-    equipajes_mano = st.sidebar.number_input(
+    equipajes_mano = col_equip.number_input(
         "Equipajes de mano",
         min_value=0,
         max_value=max(0, viajeros_con_equipaje),
@@ -964,55 +1032,60 @@ if modo == "🔎 Buscar vuelos":
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🎛️ Filtros avanzados")
-    escalas_sel = st.sidebar.selectbox("Escalas", list(STOPS_OPTIONS.keys()), index=0)
-    ordenar_sel = st.sidebar.selectbox("Ordenar por", list(SORT_OPTIONS.keys()), index=0)
-    precio_max = st.sidebar.number_input("Precio máximo (€)", min_value=0, max_value=10000, value=0, step=10, help="0 = sin límite.")
-    horas_ida = st.sidebar.slider("Hora de salida - ida", 0, 23, (0, 23))
+    # Fila 1: escalas, orden y precio máximo.
+    col_esc, col_ord, col_precio = st.sidebar.columns(3)
+    escalas_sel = col_esc.selectbox("Escalas", list(STOPS_OPTIONS.keys()), index=0)
+    ordenar_sel = col_ord.selectbox("Ordenar por", list(SORT_OPTIONS.keys()), index=0)
+    precio_max = col_precio.number_input("Precio máx. (€)", min_value=0, max_value=10000, value=0, step=10, help="0 = sin límite.")
 
-    horas_vuelta = (0, 23)
+    # Fila 2: horas de salida (ida y, si aplica, vuelta) lado a lado.
     if buscar_vuelta:
-        horas_vuelta = st.sidebar.slider("Hora de salida - vuelta", 0, 23, (0, 23))
+        col_hida, col_hvuelta = st.sidebar.columns(2)
+        horas_ida = col_hida.slider("Salida ida (h)", 0, 23, (0, 23))
+        horas_vuelta = col_hvuelta.slider("Salida vuelta (h)", 0, 23, (0, 23))
+    else:
+        horas_ida = st.sidebar.slider("Hora de salida (h)", 0, 23, (0, 23))
+        horas_vuelta = (0, 23)
 
-    duracion_max = st.sidebar.number_input("Duración máxima del trayecto (h)", min_value=0, max_value=48, value=0, help="0 = sin límite.")
-    usar_escala = st.sidebar.checkbox("Limitar duración de las escalas", value=False)
-    rango_escala = (30, 360)
-    if usar_escala:
-        rango_escala = st.sidebar.slider("Duración de escala (min)", min_value=30, max_value=720, value=(60, 300), step=15)
+    # El resto de filtros avanzados (menos usados) van en un desplegable
+    # aparte para que las 2 filas de arriba no crezcan más.
+    with st.sidebar.expander("Más filtros: escalas, conexiones y aerolíneas"):
+        duracion_max = st.number_input("Duración máxima del trayecto (h)", min_value=0, max_value=48, value=0, help="0 = sin límite.")
+        usar_escala = st.checkbox("Limitar duración de las escalas", value=False)
+        rango_escala = (30, 360)
+        if usar_escala:
+            rango_escala = st.slider("Duración de escala (min)", min_value=30, max_value=720, value=(60, 300), step=15)
 
-    excluir_conexiones = st.sidebar.text_input("Excluir aeropuertos de conexión", placeholder="Ej.: LHR,CDG")
-    incluir_aerolineas = st.sidebar.multiselect("Incluir solo aerolíneas", options=sorted(AIRLINES.keys()))
-    excluir_aerolineas = st.sidebar.multiselect("Excluir aerolíneas", options=sorted(AIRLINES.keys()))
-    if incluir_aerolineas and excluir_aerolineas:
-        st.sidebar.error("No puedes incluir y excluir aerolíneas simultáneamente.")
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🌍 Aeropuertos Cercanos")
-    buscar_cercanos_origen = st.sidebar.checkbox("Incluir aeropuertos cercanos de salida", value=False)
-    radio_km_origen = 0
-    if buscar_cercanos_origen:
-        radio_km_origen = st.sidebar.slider("Radio de salida (km)", min_value=50, max_value=600, value=100, step=10)
-
-    buscar_cercanos_destino = st.sidebar.checkbox("Incluir aeropuertos cercanos de llegada", value=False)
-    radio_km_destino = 0
-    if buscar_cercanos_destino:
-        radio_km_destino = st.sidebar.slider("Radio de llegada (km)", min_value=50, max_value=600, value=100, step=10)
+        excluir_conexiones = st.text_input("Excluir aeropuertos de conexión", placeholder="Ej.: LHR,CDG")
+        incluir_aerolineas = st.multiselect("Incluir solo aerolíneas", options=sorted(AIRLINES.keys()))
+        excluir_aerolineas = st.multiselect("Excluir aerolíneas", options=sorted(AIRLINES.keys()))
+        if incluir_aerolineas and excluir_aerolineas:
+            st.error("No puedes incluir y excluir aerolíneas simultáneamente.")
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🔎 Cobertura y fechas")
-    busqueda_exhaustiva = st.sidebar.checkbox(
-        "Búsqueda exhaustiva",
+    st.sidebar.subheader("🌍 Cercanos y cobertura")
+    # Fila 1: aeropuertos cercanos (origen/destino).
+    col_cerc_o, col_cerc_d = st.sidebar.columns(2)
+    buscar_cercanos_origen = col_cerc_o.checkbox("Cercanos salida", value=False)
+    buscar_cercanos_destino = col_cerc_d.checkbox("Cercanos llegada", value=False)
+    radio_km_origen = st.sidebar.slider("Radio de salida (km)", min_value=50, max_value=600, value=100, step=10) if buscar_cercanos_origen else 0
+    radio_km_destino = st.sidebar.slider("Radio de llegada (km)", min_value=50, max_value=600, value=100, step=10) if buscar_cercanos_destino else 0
+
+    # Fila 2: búsqueda exhaustiva y fechas flexibles de ida.
+    col_exh, col_flex_i = st.sidebar.columns(2)
+    busqueda_exhaustiva = col_exh.checkbox(
+        "Exhaustiva",
         value=True,
         help="Activa show_hidden + deep_search para aproximarse a los resultados del navegador.",
     )
+    flex_ida = col_flex_i.checkbox("Flex. ida", value=False)
 
-    flex_ida = st.sidebar.checkbox("Fechas flexibles ida", value=False)
+    # Fechas flexibles de vuelta sólo aplica en modo ida y vuelta: se añade
+    # como fila extra (condicional) en vez de forzar una 3ª columna estrecha.
+    flex_vuelta = st.sidebar.checkbox("Fechas flexibles de vuelta", value=False) if buscar_vuelta else False
+
     radio_ida = st.sidebar.slider("Días de margen (ida)", min_value=1, max_value=5, value=3) if flex_ida else 0
-
-    flex_vuelta = False
-    radio_vuelta = 0
-    if buscar_vuelta:
-        flex_vuelta = st.sidebar.checkbox("Fechas flexibles vuelta", value=False)
-        radio_vuelta = st.sidebar.slider("Días de margen (vuelta)", min_value=1, max_value=5, value=3) if flex_vuelta else 0
+    radio_vuelta = st.sidebar.slider("Días de margen (vuelta)", min_value=1, max_value=5, value=3) if (buscar_vuelta and flex_vuelta) else 0
 
     # Cálculo multiplicativo de la matriz de llamadas
     consultas_ida = (1 + 2 * radio_ida) if flex_ida else 1

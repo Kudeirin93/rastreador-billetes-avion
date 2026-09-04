@@ -173,7 +173,8 @@ def selector_aeropuerto(label, iata_por_defecto, key_prefix):
     return st.sidebar.selectbox(
         label,
         options=opciones_busqueda,
-        index=buscar_indice_por_iata(iata_por_defecto, opciones_busqueda),
+        index=None, # Deja el cuadro vacío por defecto
+        placeholder="🔎 Escribe ciudad, aereopuerto o IATA...", # Instrucción clara
         key=f"{key_prefix}_select",
     )
 
@@ -985,9 +986,9 @@ if modo == "🔎 Buscar vuelos":
     origen_seleccion = selector_aeropuerto("Origen (Ciudad o Aeropuerto)", def_origen, "origen")
     destino_seleccion = selector_aeropuerto("Destino (Ciudad o Aeropuerto)", def_destino, "destino")
 
-    # Extracción automática del código IATA (los 3 caracteres entre paréntesis al final)
-    origen = origen_seleccion.split("(")[-1].replace(")", "").strip()
-    destino = destino_seleccion.split("(")[-1].replace(")", "").strip()
+    # Extracción automática del código IATA protegiendo contra valores nulos
+    origen = origen_seleccion.split("(")[-1].replace(")", "").strip() if origen_seleccion else ""
+    destino = destino_seleccion.split("(")[-1].replace(")", "").strip() if destino_seleccion else ""
     fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=def_ida)
     buscar_vuelta = st.sidebar.checkbox(
         "Ida y vuelta",

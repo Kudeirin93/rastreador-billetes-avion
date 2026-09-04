@@ -52,6 +52,47 @@ page_bg_img = """
 [data-testid="stSidebarUserContent"] {
     padding-top: 1rem !important;
 }
+
+/* 4. Forzar texto claro sobre el fondo oscuro, independientemente de si el
+      usuario tiene activado el modo claro o el modo oscuro de Streamlit.
+      El fondo de la app siempre es oscuro (imagen + degradado), así que el
+      texto debe permanecer claro pase lo que pase con el tema del sistema. */
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span,
+.stApp [data-testid="stMarkdownContainer"] p,
+.stApp [data-testid="stMarkdownContainer"] h1,
+.stApp [data-testid="stMarkdownContainer"] h2,
+.stApp [data-testid="stMarkdownContainer"] h3,
+.stApp [data-testid="stMarkdownContainer"] h4,
+.stApp [data-testid="stWidgetLabel"] p,
+.stApp [data-testid="stMetricLabel"] p,
+.stApp [data-testid="stMetricValue"],
+.stApp [data-testid="stCaptionContainer"] {
+    color: #FAFAFA !important;
+}
+
+/* Las opciones de radio y checkbox también deben leerse en claro */
+[data-testid="stSidebar"] [role="radiogroup"] label p,
+[data-testid="stSidebar"] [data-testid="stCheckbox"] p,
+[data-testid="stSidebar"] [data-testid="stCheckbox"] span {
+    color: #FAFAFA !important;
+}
+
+/* 5. Los cuadros de texto, desplegables y campos numéricos tienen fondo
+      blanco propio: su texto debe seguir siendo oscuro para mantener
+      contraste, en ambos temas. */
+.stApp [data-baseweb="select"] div,
+.stApp [data-baseweb="input"] input,
+.stApp input,
+.stApp textarea {
+    color: #262730 !important;
+}
 </style>
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)
@@ -836,7 +877,7 @@ def explorar_a_df(result):
 # ============================================================
 
 st.sidebar.markdown(
-    "<h2 style='margin-top: -40px;'>✈️ Menú Principal</h2>", 
+    "<h2 style='margin-top: -40px;'>✈️ Menú Principal</h2>",
     unsafe_allow_html=True
 )
 modo = st.sidebar.radio("Modo", ["🔎 Buscar vuelos", "🌍 Inspírame"], index=0)
@@ -886,19 +927,19 @@ if modo == "🔎 Buscar vuelos":
         def_vuelta = def_ida
 
     st.sidebar.header("Configuración de Búsqueda")
-    
+
     # Desplegables con buscador integrado
     origen_seleccion = st.sidebar.selectbox(
-        "Origen (Ciudad o Aeropuerto)", 
-        options=opciones_busqueda, 
+        "Origen (Ciudad o Aeropuerto)",
+        options=opciones_busqueda,
         index=buscar_indice_por_iata(def_origen, opciones_busqueda)
     )
     destino_seleccion = st.sidebar.selectbox(
-        "Destino (Ciudad o Aeropuerto)", 
-        options=opciones_busqueda, 
+        "Destino (Ciudad o Aeropuerto)",
+        options=opciones_busqueda,
         index=buscar_indice_por_iata(def_destino, opciones_busqueda)
     )
-    
+
     # Extracción automática del código IATA (los 3 caracteres entre paréntesis al final)
     origen = origen_seleccion.split("(")[-1].replace(")", "").strip()
     destino = destino_seleccion.split("(")[-1].replace(")", "").strip()
@@ -976,7 +1017,7 @@ if modo == "🔎 Buscar vuelos":
         value=True,
         help="Activa show_hidden + deep_search para aproximarse a los resultados del navegador.",
     )
-    
+
     flex_ida = st.sidebar.checkbox("Fechas flexibles ida", value=False)
     radio_ida = st.sidebar.slider("Días de margen (ida)", min_value=1, max_value=5, value=3) if flex_ida else 0
 
@@ -1125,8 +1166,8 @@ if modo == "🔎 Buscar vuelos":
                 base_params_json = json.dumps(params, sort_keys=True, separators=(",", ":"))
                 with st.spinner(f"Construyendo matriz (hasta {coste_estimado} comprobaciones)..."):
                     cal_df = obtener_calendario_precios(
-                        base_params_json, 
-                        search_state["radius_ida"], 
+                        base_params_json,
+                        search_state["radius_ida"],
                         search_state["radius_vuelta"]
                     )
                 if cal_df.empty:

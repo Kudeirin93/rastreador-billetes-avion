@@ -61,36 +61,23 @@ page_bg_img = """
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3,
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"],
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] span,
 .stApp [data-testid="stMarkdownContainer"] p,
 .stApp [data-testid="stMarkdownContainer"] h1,
 .stApp [data-testid="stMarkdownContainer"] h2,
 .stApp [data-testid="stMarkdownContainer"] h3,
 .stApp [data-testid="stMarkdownContainer"] h4,
-.stApp [data-testid="stWidgetLabel"] p,
 .stApp [data-testid="stMetricLabel"] p,
 .stApp [data-testid="stMetricValue"],
 .stApp [data-testid="stCaptionContainer"] {
     color: #FAFAFA !important;
 }
 
-/* Las opciones de radio y checkbox también deben leerse en claro */
-[data-testid="stSidebar"] [role="radiogroup"] label p,
-[data-testid="stSidebar"] [data-testid="stCheckbox"] p,
-[data-testid="stSidebar"] [data-testid="stCheckbox"] span {
-    color: #FAFAFA !important;
-}
-
-/* 5. Los cuadros de texto, desplegables y campos numéricos tienen fondo
-      blanco propio: su texto debe seguir siendo oscuro para mantener
-      contraste, en ambos temas. */
-.stApp [data-baseweb="select"] div,
-.stApp [data-baseweb="input"] input,
-.stApp input,
-.stApp textarea {
+/* 5. Los campos de fecha (selector de año/mes/día) y los cuadros de texto
+      numérico se dibujan siempre sobre una superficie blanca propia:
+      su texto debe permanecer oscuro pase lo que pase con el tema. */
+[data-testid="stDateInputField"] span[role="spinbutton"],
+[data-testid="stDateInputField"] span[data-type="literal"] {
     color: #262730 !important;
 }
 </style>

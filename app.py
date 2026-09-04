@@ -131,12 +131,13 @@ div[role="listbox"] {
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
     margin-bottom: 0.1rem !important;
 }
-/* 9. Eliminar espacio en blanco encima del primer título del panel lateral */
+/* 9. ELIMINAR EL HUECO BLANCO SUPERIOR DEL SIDEBAR */
 [data-testid="stSidebarUserContent"] {
-    padding-top: 0rem !important; 
+    padding-top: 0rem !important;
+    padding-bottom: 0.4rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child {
-    margin-top: -2.5rem !important;
+    margin-top: -3.5rem !important;
 }
 </style>
 """

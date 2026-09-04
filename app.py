@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from serpapi import GoogleSearch
 import datetime
+
 import airportsdata
 import urllib.request
 import json
@@ -197,7 +198,8 @@ def obtener_opciones_aeropuertos():
             nombre_pais = PAISES_ES.get(codigo_pais, codigo_pais)
             
             if ciudad:
-                opciones.append(f"{ciudad}, {nombre_pais} ({iata})")
+                # Se cambia la coma por el guion espaciado
+                opciones.append(f"{ciudad} - {nombre_pais} ({iata})")
                 
     return sorted(list(set(opciones)))
 

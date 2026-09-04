@@ -131,7 +131,6 @@ div[role="listbox"] {
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
     margin-bottom: 0.1rem !important;
 }
-</style>
 /* 9. Eliminar espacio en blanco encima del primer título del panel lateral */
 [data-testid="stSidebarUserContent"] {
     padding-top: 0rem !important; 
@@ -139,6 +138,7 @@ div[role="listbox"] {
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child {
     margin-top: -2.5rem !important;
 }
+</style>
 """
 st.markdown(page_bg_img, unsafe_allow_html=True)
 st.markdown("<h1 style='text-align: center;'>Buscador de Vuelos Low-Cost ✈️</h1>", unsafe_allow_html=True)

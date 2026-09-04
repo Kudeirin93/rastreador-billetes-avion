@@ -137,7 +137,7 @@ div[role="listbox"] {
     padding-bottom: 0.4rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child {
-    margin-top: -3.5rem !important;
+    margin-top: -4.0rem !important;
 }
 </style>
 """

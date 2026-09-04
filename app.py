@@ -121,15 +121,11 @@ div[role="listbox"] {
 }
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {
-    margin-top: 0.1rem !important;
+    margin-top: 0 !important;
     margin-bottom: 0.4rem !important;
     padding-top: 0 !important;
     padding-bottom: 0 !important;
-}
-/* La primera cabecera ("Menú Principal") no necesita margen superior: el
-   padding-top del propio contenedor del sidebar ya da aire suficiente. */
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:first-child h2 {
-    margin-top: 0 !important;
+    line-height: 1.15 !important;
 }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
     margin-top: -0.3rem !important;

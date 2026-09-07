@@ -1459,15 +1459,81 @@ def explorar_a_df(result):
 
 
 
+def _precio_numerico(value):
+    """Convierte precios numéricos o textos como '123 €' / '€123' a float."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return float(value)
+        except Exception:
+            return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        # Conserva dígitos y separadores habituales. La API normalmente devuelve
+        # números, pero este fallback evita N/A si cambia el formato/localización.
+        cleaned = "".join(ch for ch in raw if ch.isdigit() or ch in ",.-")
+        if not cleaned:
+            return None
+        # 1.234,56 -> 1234.56 | 1,234.56 -> 1234.56 | 123,45 -> 123.45
+        if "," in cleaned and "." in cleaned:
+            if cleaned.rfind(",") > cleaned.rfind("."):
+                cleaned = cleaned.replace(".", "").replace(",", ".")
+            else:
+                cleaned = cleaned.replace(",", "")
+        elif "," in cleaned:
+            parts = cleaned.split(",")
+            if len(parts[-1]) in (1, 2):
+                cleaned = cleaned.replace(".", "").replace(",", ".")
+            else:
+                cleaned = cleaned.replace(",", "")
+        try:
+            return float(cleaned)
+        except Exception:
+            return None
+    return None
+
+
+def _extraer_precio_destino(d):
+    """Obtiene el mejor precio disponible del registro Explore sin hacer otra API call."""
+    candidatos = [
+        d.get("flight_price"),
+        d.get("price"),
+        (d.get("flight") or {}).get("price") if isinstance(d.get("flight"), dict) else None,
+        (d.get("cheapest_flight") or {}).get("price") if isinstance(d.get("cheapest_flight"), dict) else None,
+    ]
+    for candidato in candidatos:
+        precio = _precio_numerico(candidato)
+        if precio is not None:
+            return precio
+
+    # Fallback por si SerpApi incluyera vuelos anidados dentro del destino.
+    flights = d.get("flights") or []
+    precios = []
+    if isinstance(flights, list):
+        for flight in flights:
+            if isinstance(flight, dict):
+                p = _precio_numerico(flight.get("price"))
+                if p is not None:
+                    precios.append(p)
+    return min(precios) if precios else None
+
+
 def destinos_anywhere_a_df(result, num_pasajeros=1):
-    """Normaliza `destinations` de Google Travel Explore para la pantalla Buscar."""
+    """Normaliza todos los destinos devueltos por Google Travel Explore.
+
+    IMPORTANTE: esta función NO lanza nuevas consultas. Una única respuesta
+    Explore puede contener muchas alternativas de destino y su `flight_price`.
+    """
     rows = []
     num_pasajeros = max(1, int(num_pasajeros or 1))
 
     for item_idx, d in enumerate(result.get("destinations", []) or []):
         airport = d.get("destination_airport", {}) or {}
-        price = pd.to_numeric(d.get("flight_price"), errors="coerce")
-        destination_id = d.get("destination_id") or airport.get("code") or ""
+        price = _extraer_precio_destino(d)
+        destination_id = d.get("destination_id") or airport.get("location_id") or airport.get("code") or ""
         airport_code = airport.get("code", "")
 
         rows.append({
@@ -1478,8 +1544,8 @@ def destinos_anywhere_a_df(result, num_pasajeros=1):
             "Fecha Ida": d.get("start_date", ""),
             "Fecha Vuelta": d.get("end_date", ""),
             "Precio_Num": price,
-            "Precio": f"{int(round(price))} €" if pd.notna(price) else "N/A",
-            "Precio/persona": f"{price / num_pasajeros:.2f} €" if pd.notna(price) else "N/A",
+            "Precio": f"{price:.0f} €" if price is not None else "N/A",
+            "Precio/persona": f"{price / num_pasajeros:.2f} €" if price is not None else "N/A",
             "Duración": fmt_minutes(d.get("flight_duration")),
             "Escalas": (
                 "Directo" if d.get("number_of_stops") == 0
@@ -1487,8 +1553,10 @@ def destinos_anywhere_a_df(result, num_pasajeros=1):
                 else "N/A"
             ),
             "Aerolínea": d.get("airline", ""),
+            "Ver en Google": d.get("link", ""),
             "_arrival_id": destination_id,
             "_arrival_airport": airport_code,
+            "_serpapi_link": d.get("serpapi_link", ""),
             "_lat": (d.get("gps_coordinates") or {}).get("latitude"),
             "_lon": (d.get("gps_coordinates") or {}).get("longitude"),
         })
@@ -1968,20 +2036,14 @@ if modo == "🔎 Buscar vuelos":
             st.markdown("---")
             st.subheader("🌍 Destinos para ‘Cualquier lugar’")
             st.caption(
-                "Esta primera consulta usa Google Travel Explore para descubrir destinos sin `arrival_id`. "
-                "Selecciona uno y la app abrirá Google Flights para ver los vuelos concretos."
+                "Una única consulta a Google Travel Explore devuelve múltiples destinos y, cuando Google los publica, "
+                "su mejor tarifa orientativa. La app muestra todas esas alternativas directamente y no abre una "
+                "consulta adicional por cada ciudad."
             )
 
             if df.empty:
                 st.warning("Google Travel Explore no devolvió destinos con estos filtros y fechas.")
             else:
-                visible_cols = [
-                    "Destino", "País", "Aeropuerto", "Fecha Ida", "Fecha Vuelta",
-                    "Precio", "Precio/persona", "Duración", "Escalas", "Aerolínea",
-                ]
-                visible_cols = [c for c in visible_cols if c in df.columns]
-                st.dataframe(df[visible_cols], hide_index=True, use_container_width=True)
-
                 if df["Precio_Num"].notna().any():
                     min_price = float(df["Precio_Num"].min())
                     min_pp = min_price / pasajeros
@@ -2003,141 +2065,84 @@ if modo == "🔎 Buscar vuelos":
                             f"Mejor precio actual: {int(min_price)} €. Umbrales: {thresholds}."
                         )
 
-                st.markdown("### ✈️ Abrir un destino")
-                selected_destination_idx = st.selectbox(
-                    "Destino seleccionado",
-                    options=list(df.index),
-                    format_func=lambda i: anywhere_destination_label(df.loc[i]),
-                    key="anywhere_destination_select",
+                # ------------------------------------------------------------
+                # UNA SOLA CONSULTA: mostrar TODAS las alternativas devueltas
+                # por Google Travel Explore. No preguntamos qué destino abrir
+                # y no consumimos créditos adicionales automáticamente.
+                # ------------------------------------------------------------
+                priced_df = df[df["Precio_Num"].notna()].copy()
+                unpriced_df = df[df["Precio_Num"].isna()].copy()
+
+                st.markdown("### 💶 Todas las alternativas con tarifa")
+                st.caption(
+                    "La tabla usa exclusivamente la respuesta de la consulta de ‘Cualquier lugar’. "
+                    "No se está haciendo una llamada adicional a SerpApi por cada ciudad."
                 )
-                selected_destination = df.loc[selected_destination_idx]
-                selected_arrival_id = selected_destination.get("_arrival_id", "")
 
-                if not selected_arrival_id:
-                    st.warning("Este resultado no incluye un identificador de destino utilizable en Google Flights.")
-                elif st.button("✈️ Ver vuelos a este destino", type="primary", key="open_anywhere_destination"):
-                    detail_params = dict(search_state.get("detail_params") or {})
-                    if not detail_params:
-                        detail_params = detalle_flights_desde_explore(search_state.get("params", {}))
-                    detail_params["arrival_id"] = selected_arrival_id
-                    try:
-                        with st.spinner(f"Buscando vuelos a {selected_destination.get('Destino', '')}..."):
-                            detail_result = serp_search(detail_params)
-                            detail_df = vuelos_a_df(detail_result, num_pasajeros=pasajeros)
-                        st.session_state["anywhere_detail"] = {
-                            "arrival_id": selected_arrival_id,
-                            "destination_name": selected_destination.get("Destino", ""),
-                            "params": detail_params,
-                            "result": detail_result,
-                            "df": detail_df,
+                if priced_df.empty:
+                    st.warning(
+                        "SerpApi ha devuelto destinos, pero ninguno incluye `flight_price` para los filtros actuales. "
+                        "No se ha gastado ningún crédito adicional. Prueba a aumentar o quitar el precio máximo, "
+                        "o a relajar otros filtros."
+                    )
+                else:
+                    alternativas_cols = [
+                        "Destino", "País", "Aeropuerto", "Fecha Ida", "Fecha Vuelta",
+                        "Precio", "Precio/persona", "Duración", "Escalas", "Aerolínea", "Ver en Google",
+                    ]
+                    alternativas_cols = [c for c in alternativas_cols if c in priced_df.columns]
+                    st.dataframe(
+                        priced_df[alternativas_cols],
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config={
+                            "Ver en Google": st.column_config.LinkColumn(
+                                "Google",
+                                display_text="Abrir ↗",
+                                help="Abre el resultado de Google Travel sin consumir otra consulta de SerpApi.",
+                            )
+                        } if "Ver en Google" in alternativas_cols else None,
+                    )
+                    st.success(
+                        f"Se muestran {len(priced_df)} alternativas con precio usando la misma consulta de SerpApi."
+                    )
+
+                if not unpriced_df.empty:
+                    with st.expander(f"Destinos devueltos sin tarifa disponible ({len(unpriced_df)})"):
+                        st.caption(
+                            "Google Travel Explore puede devolver tarjetas de destino sin `flight_price`. "
+                            "Se mantienen separadas para no mezclar destinos sin tarifa con las alternativas comparables."
+                        )
+                        no_price_cols = [
+                            "Destino", "País", "Aeropuerto", "Fecha Ida", "Fecha Vuelta",
+                            "Duración", "Escalas", "Aerolínea", "Ver en Google",
+                        ]
+                        no_price_cols = [c for c in no_price_cols if c in unpriced_df.columns]
+                        st.dataframe(
+                            unpriced_df[no_price_cols],
+                            hide_index=True,
+                            use_container_width=True,
+                            column_config={
+                                "Ver en Google": st.column_config.LinkColumn("Google", display_text="Abrir ↗")
+                            } if "Ver en Google" in no_price_cols else None,
+                        )
+
+                # Diagnóstico gratuito: usa el JSON que YA hemos recibido.
+                with st.expander("🧪 Diagnóstico de la respuesta de SerpApi", expanded=False):
+                    st.write(
+                        {
+                            "destinos_totales": int(len(df)),
+                            "destinos_con_precio": int(df["Precio_Num"].notna().sum()),
+                            "destinos_sin_precio": int(df["Precio_Num"].isna().sum()),
+                            "search_id": (result.get("search_metadata") or {}).get("id"),
+                            "search_status": (result.get("search_metadata") or {}).get("status"),
+                            "search_parameters": result.get("search_parameters", {}),
                         }
-                        st.session_state.pop("return_search", None)
-                    except Exception as exc:
-                        st.error(f"No se pudieron abrir los vuelos de ese destino: {exc}")
-                        st.session_state.pop("anywhere_detail", None)
-
-                detail_state = st.session_state.get("anywhere_detail")
-                if detail_state and detail_state.get("arrival_id") == selected_arrival_id:
-                    detail_df = detail_state["df"]
-                    detail_result = detail_state["result"]
-                    detail_params = detail_state["params"]
-
-                    st.markdown(f"### 🛫 Vuelos a {detail_state.get('destination_name', '')}")
-                    mostrar_df_vuelos(detail_df)
-                    mostrar_price_insights(detail_result)
-
-                    if not detail_df.empty and detail_df["Precio_Num"].notna().any():
-                        pmin = float(detail_df["Precio_Num"].min())
-                        c1, c2 = st.columns(2)
-                        c1.metric("💰 Mejor tarifa de la ruta", f"{pmin:.0f} €")
-                        c2.metric("👤 Por persona", f"{pmin / pasajeros:.0f} €")
-
-                    if not is_roundtrip and not detail_df.empty:
-                        selectable = [idx for idx in detail_df.index if pd.notna(detail_df.loc[idx, "Precio_Num"])]
-                        if selectable:
-                            selected_idx = st.selectbox(
-                                "Selecciona un vuelo",
-                                options=selectable,
-                                format_func=lambda i: flight_label(detail_df.loc[i]),
-                                key="anywhere_oneway_booking_select",
-                            )
-                            mostrar_booking_options(
-                                detail_df.loc[selected_idx, "_booking_token"],
-                                key_prefix=f"anywhere_oneway_{selected_idx}",
-                                num_pasajeros=pasajeros,
-                            )
-
-                    if is_roundtrip and not detail_df.empty:
-                        valid_outbound = [idx for idx in detail_df.index if detail_df.loc[idx, "_departure_token"]]
-                        if not valid_outbound:
-                            st.warning("Google no devolvió `departure_token` para las idas de este destino.")
-                        else:
-                            selected_outbound_idx = st.selectbox(
-                                "Ida seleccionada",
-                                options=valid_outbound,
-                                format_func=lambda i: flight_label(detail_df.loc[i]),
-                                key="anywhere_roundtrip_outbound_select",
-                            )
-                            selected_departure_token = detail_df.loc[selected_outbound_idx, "_departure_token"]
-
-                            if st.button("🔁 Ver vueltas compatibles", type="primary", key="anywhere_load_returns"):
-                                return_params = dict(detail_params)
-                                return_params["departure_token"] = selected_departure_token
-                                try:
-                                    with st.spinner("Buscando vueltas compatibles..."):
-                                        return_result = serp_search(return_params)
-                                        return_df = vuelos_a_df(return_result, num_pasajeros=pasajeros)
-                                    st.session_state["return_search"] = {
-                                        "departure_token": selected_departure_token,
-                                        "scope": "anywhere",
-                                        "result": return_result,
-                                        "df": return_df,
-                                    }
-                                except Exception as exc:
-                                    st.error(f"No se pudieron recuperar las vueltas: {exc}")
-                                    st.session_state.pop("return_search", None)
-
-                            return_state = st.session_state.get("return_search")
-                            if (
-                                return_state
-                                and return_state.get("scope") == "anywhere"
-                                and return_state.get("departure_token") == selected_departure_token
-                            ):
-                                return_df = return_state["df"]
-                                st.markdown("### 🛬 Vueltas compatibles")
-                                mostrar_df_vuelos(return_df)
-
-                                selectable_returns = [
-                                    idx for idx in return_df.index
-                                    if pd.notna(return_df.loc[idx, "Precio_Num"])
-                                ]
-                                if selectable_returns:
-                                    selected_return_idx = st.selectbox(
-                                        "Selecciona la combinación de vuelta",
-                                        options=selectable_returns,
-                                        format_func=lambda i: flight_label(return_df.loc[i]),
-                                        key="anywhere_roundtrip_return_select",
-                                    )
-                                    selected_row = return_df.loc[selected_return_idx]
-                                    selected_outbound_row = detail_df.loc[selected_outbound_idx]
-
-                                    if pd.notna(selected_row["Precio_Num"]):
-                                        total_comb = float(selected_row["Precio_Num"])
-                                        c_total, c_pp = st.columns(2)
-                                        c_total.metric("💰 Precio total de la combinación", f"{total_comb:.0f} €")
-                                        c_pp.metric("👤 Precio por persona", f"{total_comb / pasajeros:.0f} €")
-
-                                    mostrar_resumen_precios_trayectos(
-                                        detail_params,
-                                        selected_outbound_row,
-                                        selected_row,
-                                        pasajeros,
-                                    )
-                                    mostrar_booking_options(
-                                        selected_row["_booking_token"],
-                                        key_prefix=f"anywhere_roundtrip_{selected_return_idx}",
-                                        num_pasajeros=pasajeros,
-                                    )
+                    )
+                    destinos_raw = result.get("destinations", []) or []
+                    if destinos_raw:
+                        st.caption("Primer destino tal como lo devolvió SerpApi (no genera una nueva consulta):")
+                        st.json(destinos_raw[0])
 
             st.markdown("### 📈 Histórico local")
             hist = obtener_historico(

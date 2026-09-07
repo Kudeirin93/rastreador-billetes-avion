@@ -573,6 +573,9 @@ def construir_config_guardable(search_state):
         "adults": int(search_state.get("adults", 1)),
         "children": int(search_state.get("children", 0)),
         "passengers": int(search_state.get("passengers", 1)),
+        # En "Cualquier lugar" el presupuesto se aplica localmente y por eso
+        # se guarda separado de los parámetros enviados a SerpApi.
+        "max_price_ui": int(search_state.get("max_price_ui", 0) or 0),
         "flexible_ida": bool(search_state.get("flexible_ida", False)),
         "radius_ida": int(search_state.get("radius_ida", 0)),
         "flexible_vuelta": bool(search_state.get("flexible_vuelta", False)),
@@ -603,6 +606,10 @@ def ejecutar_busqueda_guardada(config):
     # "Missing arrival_id parameter". Los migramos automáticamente a Explore.
     if destino_anywhere and params.get("engine") != "google_travel_explore":
         params = convertir_params_flights_a_explore(params)
+    if destino_anywhere:
+        # También saneamos presets ya creados con engine Explore que todavía
+        # contengan max_price de versiones anteriores.
+        params.pop("max_price", None)
 
     result = serp_search(params)
     pasajeros = max(1, int(config.get("passengers", 1)))
@@ -633,6 +640,7 @@ def ejecutar_busqueda_guardada(config):
         "adults": int(config.get("adults", params.get("adults", 1))),
         "children": int(config.get("children", params.get("children", 0))),
         "passengers": pasajeros,
+        "max_price_ui": int(config.get("max_price_ui", 0) or 0),
         "origin_ids": list(config.get("origin_ids", [])),
         "destination_ids": list(config.get("destination_ids", [])),
         "destination_anywhere": destino_anywhere,
@@ -1333,8 +1341,12 @@ def build_anywhere_params(
     elif exclude_codes:
         params["exclude_airlines"] = ",".join(exclude_codes)
 
-    if max_price and max_price > 0:
-        params["max_price"] = int(max_price)
+    # IMPORTANTE: en búsquedas "Cualquier lugar" NO enviamos max_price a
+    # Google Travel Explore. Con varios pasajeros, Google/SerpApi puede
+    # devolver las tarjetas de destino pero omitir `flight_price` cuando el
+    # límite se aplica en servidor. Recuperamos primero todas las tarifas con
+    # una sola consulta y aplicamos el presupuesto localmente en Streamlit.
+    # Esto maximiza la información obtenida por cada crédito de SerpApi.
 
     if max_duration_hours and max_duration_hours > 0:
         params["max_duration"] = int(max_duration_hours * 60)
@@ -1355,6 +1367,9 @@ def convertir_params_flights_a_explore(params):
     converted["engine"] = "google_travel_explore"
     converted["travel_mode"] = "1"
     converted.pop("arrival_id", None)
+    # Presets antiguos podían llevar max_price dentro de la llamada Explore.
+    # Lo eliminamos para evitar respuestas con destinos pero sin flight_price.
+    converted.pop("max_price", None)
     return converted
 
 
@@ -1714,7 +1729,20 @@ if modo == "🔎 Buscar vuelos":
     col_esc, col_ord, col_precio = st.sidebar.columns(3)
     escalas_sel = col_esc.selectbox("Escalas", list(STOPS_OPTIONS.keys()), index=0)
     ordenar_sel = col_ord.selectbox("Ordenar por", list(SORT_OPTIONS.keys()), index=0)
-    precio_max = col_precio.number_input("Precio máx. (€)", min_value=0, max_value=10000, value=0, step=10, help="0 = sin límite.")
+    precio_max = col_precio.number_input(
+        "Precio máx. (€)",
+        min_value=0,
+        max_value=10000,
+        value=0,
+        step=10,
+        help=(
+            "0 = sin límite. En ‘Cualquier lugar’ este importe NO se envía a SerpApi: "
+            "se usa después para señalar qué alternativas están dentro del presupuesto, "
+            "evitando perder los precios devueltos por Google Travel Explore."
+            if destino_anywhere
+            else "0 = sin límite."
+        ),
+    )
 
     # Fila 2: horas de salida (ida y, si aplica, vuelta) lado a lado.
     if buscar_vuelta:
@@ -2001,6 +2029,7 @@ if modo == "🔎 Buscar vuelos":
                     "adults": adultos,
                     "children": ninos,
                     "passengers": int(adultos + ninos),
+                    "max_price_ui": int(precio_max or 0),
                     "origin_ids": origenes_iata,
                     "destination_ids": destinos_iata,
                     "flexible_ida": flex_ida,
@@ -2036,17 +2065,31 @@ if modo == "🔎 Buscar vuelos":
             st.markdown("---")
             st.subheader("🌍 Destinos para ‘Cualquier lugar’")
             st.caption(
-                "Una única consulta a Google Travel Explore devuelve múltiples destinos y, cuando Google los publica, "
-                "su mejor tarifa orientativa. La app muestra todas esas alternativas directamente y no abre una "
-                "consulta adicional por cada ciudad."
+                "Una única consulta a Google Travel Explore devuelve múltiples destinos y sus tarifas orientativas. "
+                "Para aprovechar al máximo cada crédito, la app no envía el precio máximo a Explore: recupera primero "
+                "todas las tarifas y aplica el presupuesto localmente, sin consultas adicionales por ciudad."
             )
 
             if df.empty:
                 st.warning("Google Travel Explore no devolvió destinos con estos filtros y fechas.")
             else:
-                if df["Precio_Num"].notna().any():
-                    min_price = float(df["Precio_Num"].min())
-                    min_pp = min_price / pasajeros
+                visible_cols = [
+                    "Destino", "País", "Aeropuerto", "Fecha Ida", "Fecha Vuelta",
+                    "Precio", "Precio/persona", "Duración", "Escalas", "Aerolínea",
+                ]
+                visible_cols = [c for c in visible_cols if c in df.columns]
+                st.dataframe(df[visible_cols], hide_index=True, use_container_width=True)
+                
+                # --- NUEVO: Inyectar el mapa interactivo debajo de la tabla ---
+                st.markdown("### 🗺️ Mapa de destinos")
+                map_df = df[["_lat", "_lon"]].dropna().rename(columns={"_lat": "lat", "_lon": "lon"})
+                if not map_df.empty:
+                    st.map(map_df)
+                # --------------------------------------------------------------
+            
+            if df["Precio_Num"].notna().any():
+                min_price = float(df["Precio_Num"].min())
+                min_pp = min_price / pasajeros
                     c1, c2 = st.columns(2)
                     c1.metric("💰 Mejor precio agregado encontrado", f"{min_price:.0f} €")
                     c2.metric("👤 Mejor precio por persona", f"{min_pp:.0f} €")
@@ -2072,24 +2115,52 @@ if modo == "🔎 Buscar vuelos":
                 # ------------------------------------------------------------
                 priced_df = df[df["Precio_Num"].notna()].copy()
                 unpriced_df = df[df["Precio_Num"].isna()].copy()
+                presupuesto_ui = int(search_state.get("max_price_ui", 0) or 0)
 
                 st.markdown("### 💶 Todas las alternativas con tarifa")
                 st.caption(
-                    "La tabla usa exclusivamente la respuesta de la consulta de ‘Cualquier lugar’. "
-                    "No se está haciendo una llamada adicional a SerpApi por cada ciudad."
+                    "La tabla usa exclusivamente la respuesta de una sola consulta de ‘Cualquier lugar’. "
+                    "El precio máximo se aplica aquí, después de recibir las tarifas, para no provocar que "
+                    "Google Travel Explore devuelva destinos sin `flight_price`."
                 )
 
                 if priced_df.empty:
-                    st.warning(
-                        "SerpApi ha devuelto destinos, pero ninguno incluye `flight_price` para los filtros actuales. "
-                        "No se ha gastado ningún crédito adicional. Prueba a aumentar o quitar el precio máximo, "
-                        "o a relajar otros filtros."
+                    st.error(
+                        "SerpApi sigue sin devolver `flight_price` incluso sin aplicar el precio máximo en servidor. "
+                        "Abre el diagnóstico de abajo: si `search_parameters` no contiene `max_price`, el problema ya "
+                        "no es el presupuesto y podremos aislar el siguiente filtro responsable sin gastar consultas extra."
                     )
                 else:
+                    if presupuesto_ui > 0:
+                        priced_df["Dentro presupuesto"] = priced_df["Precio_Num"].le(presupuesto_ui).map(
+                            {True: "✅ Sí", False: "—"}
+                        )
+                        # Primero las que cumplen el presupuesto y después el resto, siempre por precio.
+                        priced_df["_dentro_presupuesto"] = priced_df["Precio_Num"].le(presupuesto_ui)
+                        priced_df = priced_df.sort_values(
+                            ["_dentro_presupuesto", "Precio_Num", "Destino"],
+                            ascending=[False, True, True],
+                            na_position="last",
+                        )
+                        n_dentro = int(priced_df["_dentro_presupuesto"].sum())
+                        if n_dentro:
+                            st.success(
+                                f"{n_dentro} de {len(priced_df)} destinos están en {presupuesto_ui} € o menos. "
+                                "También se muestran las alternativas más caras para que no pierdas información."
+                            )
+                        else:
+                            st.info(
+                                f"No hay destinos a {presupuesto_ui} € o menos, pero se muestran igualmente "
+                                f"las {len(priced_df)} alternativas con tarifa obtenidas con este crédito."
+                            )
+
                     alternativas_cols = [
                         "Destino", "País", "Aeropuerto", "Fecha Ida", "Fecha Vuelta",
-                        "Precio", "Precio/persona", "Duración", "Escalas", "Aerolínea", "Ver en Google",
+                        "Precio", "Precio/persona",
                     ]
+                    if presupuesto_ui > 0:
+                        alternativas_cols.append("Dentro presupuesto")
+                    alternativas_cols += ["Duración", "Escalas", "Aerolínea", "Ver en Google"]
                     alternativas_cols = [c for c in alternativas_cols if c in priced_df.columns]
                     st.dataframe(
                         priced_df[alternativas_cols],
@@ -2103,8 +2174,8 @@ if modo == "🔎 Buscar vuelos":
                             )
                         } if "Ver en Google" in alternativas_cols else None,
                     )
-                    st.success(
-                        f"Se muestran {len(priced_df)} alternativas con precio usando la misma consulta de SerpApi."
+                    st.caption(
+                        f"{len(priced_df)} alternativas con precio procedentes de la misma respuesta de SerpApi."
                     )
 
                 if not unpriced_df.empty:
@@ -2137,6 +2208,8 @@ if modo == "🔎 Buscar vuelos":
                             "search_id": (result.get("search_metadata") or {}).get("id"),
                             "search_status": (result.get("search_metadata") or {}).get("status"),
                             "search_parameters": result.get("search_parameters", {}),
+                            "max_price_enviado_a_explore": "max_price" in (result.get("search_parameters") or {}),
+                            "presupuesto_aplicado_localmente": presupuesto_ui,
                         }
                     )
                     destinos_raw = result.get("destinations", []) or []

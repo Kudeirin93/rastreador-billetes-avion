@@ -215,17 +215,45 @@ def buscar_indice_por_iata(iata, opciones):
     return 0
 
 
-def selector_aeropuerto(label, iata_por_defecto, key_prefix):
-    """Desplegable nativo de Streamlit (una sola fila). El propio combobox
-    ya filtra por subcadena a medida que se escribe (ciudad, nombre del
-    aeropuerto o código IATA, en cualquier posición del texto) — se
-    comprobó que no hace falta un cuadro de búsqueda aparte."""
-    return st.sidebar.selectbox(
+def _opciones_desde_iatas(iatas, opciones):
+    """Convierte una lista/cadena de IATA en las opciones visibles del multiselect."""
+    if isinstance(iatas, str):
+        iatas = [x.strip().upper() for x in iatas.split(",") if x.strip()]
+    defaults = []
+    for iata in iatas or []:
+        for opc in opciones:
+            if opc.endswith(f"({iata})"):
+                defaults.append(opc)
+                break
+    return defaults
+
+
+def extraer_iatas(selecciones):
+    """Extrae y deduplica los códigos IATA de las opciones seleccionadas."""
+    codigos = []
+    for seleccion in selecciones or []:
+        try:
+            codigo = seleccion.rsplit("(", 1)[-1].replace(")", "").strip().upper()
+        except Exception:
+            continue
+        if len(codigo) == 3 and codigo not in codigos:
+            codigos.append(codigo)
+    return codigos
+
+
+def selector_aeropuertos(label, iatas_por_defecto, key_prefix):
+    """Permite seleccionar uno o varios aeropuertos/ciudades simultáneamente.
+
+    SerpApi acepta múltiples departure_id / arrival_id separados por comas.
+    El buscador de Streamlit filtra por ciudad, país o IATA mientras se escribe.
+    """
+    defaults = _opciones_desde_iatas(iatas_por_defecto, opciones_busqueda)
+    return st.sidebar.multiselect(
         label,
         options=opciones_busqueda,
-        index=None, # Deja el cuadro vacío por defecto
-        placeholder="🔎 Escribe ciudad, aereopuerto o IATA...", # Instrucción clara
-        key=f"{key_prefix}_select",
+        default=defaults,
+        placeholder="🔎 Añade una o varias ciudades/aeropuertos...",
+        key=f"{key_prefix}_multi",
     )
 
 AIRLINES = {
@@ -407,6 +435,18 @@ def obtener_lista_aeropuertos(iata_base, radio_km):
 
     cercanos.sort(key=lambda x: x[1])
     return ",".join([iata for iata, _ in cercanos[:5]])
+
+
+def expandir_aeropuertos_cercanos(iatas_base, radio_km, max_por_base=5):
+    """Expande varios aeropuertos base con sus aeropuertos cercanos y deduplica."""
+    resultado = []
+    for iata_base in iatas_base or []:
+        encontrados = obtener_lista_aeropuertos(iata_base, radio_km).split(",")
+        for codigo in encontrados[:max_por_base]:
+            codigo = codigo.strip().upper()
+            if codigo and codigo not in resultado:
+                resultado.append(codigo)
+    return ",".join(resultado)
 
 # ============================================================
 # PERSISTENCIA LOCAL: HISTORICO Y ALERTAS
@@ -622,8 +662,9 @@ def extraer_items_vuelos(results):
     return results.get("best_flights", []) + results.get("other_flights", [])
 
 
-def vuelos_a_df(results):
+def vuelos_a_df(results, num_pasajeros=1):
     rows = []
+    num_pasajeros = max(1, int(num_pasajeros or 1))
 
     for item_idx, item in enumerate(extraer_items_vuelos(results)):
         legs = item.get("flights", [])
@@ -658,6 +699,8 @@ def vuelos_a_df(results):
             "Aerolínea": airlines,
             "Vuelo": flight_numbers,
             "Precio_Num": item.get("price"),
+            "_Origen_IATA": dep.get("id", ""),
+            "_Destino_IATA": arr.get("id", ""),
             "Origen": f"{dep.get('id', '')} ({obtener_pais(dep.get('id', ''))})",
             "Fecha Salida": dep_date,
             "Hora Salida": dep_time,
@@ -679,8 +722,12 @@ def vuelos_a_df(results):
 
     df = pd.DataFrame(rows)
     df["Precio_Num"] = pd.to_numeric(df["Precio_Num"], errors="coerce")
+    df["Precio_Persona_Num"] = df["Precio_Num"] / num_pasajeros
     df = df.sort_values(["Precio_Num", "Duración_Min"], na_position="last").reset_index(drop=True)
-    df["Precio"] = df["Precio_Num"].apply(lambda x: f"{int(x)} €" if pd.notna(x) else "N/A")
+    df["Precio"] = df["Precio_Num"].apply(lambda x: f"{int(round(x))} €" if pd.notna(x) else "N/A")
+    df["Precio/persona"] = df["Precio_Persona_Num"].apply(
+        lambda x: f"{int(round(x))} €" if pd.notna(x) else "N/A"
+    )
     return df
 
 
@@ -688,6 +735,7 @@ DISPLAY_COLUMNS = [
     "Aerolínea",
     "Vuelo",
     "Precio",
+    "Precio/persona",
     "Origen",
     "Fecha Salida",
     "Hora Salida",
@@ -705,14 +753,17 @@ def mostrar_df_vuelos(df, titulo=None):
     if df.empty:
         st.warning("No se encontraron vuelos con los filtros seleccionados.")
         return
-    st.dataframe(df[DISPLAY_COLUMNS], hide_index=True, use_container_width=True)
+    columnas = [c for c in DISPLAY_COLUMNS if c in df.columns]
+    st.dataframe(df[columnas], hide_index=True, use_container_width=True)
 
 
 def flight_label(row):
     return (
-        f"{row.get('Precio', 'N/A')} · {row.get('Aerolínea', '')} · "
+        f"{row.get('Precio', 'N/A')} total · {row.get('Precio/persona', 'N/A')} p/p · "
+        f"{row.get('Aerolínea', '')} · "
         f"{row.get('Hora Salida', '')} → {row.get('Hora Llegada', '')} · {row.get('Escalas', '')}"
     )
+
 
 # ============================================================
 # PRICE INSIGHTS
@@ -761,8 +812,10 @@ def consultar_booking(booking_token):
     })
 
 
-def booking_options_a_df(results):
+def booking_options_a_df(results, num_pasajeros=1):
     rows = []
+    num_pasajeros = max(1, int(num_pasajeros or 1))
+
     for option in results.get("booking_options", []) or []:
         separate = bool(option.get("separate_tickets"))
         for section in ("together", "departing", "returning"):
@@ -772,6 +825,10 @@ def booking_options_a_df(results):
             baggage = data.get("baggage_prices") or []
             if isinstance(baggage, str):
                 baggage = [baggage]
+
+            precio = pd.to_numeric(data.get("price"), errors="coerce")
+            precio_persona = precio / num_pasajeros if pd.notna(precio) else None
+
             rows.append({
                 "Tramo": {
                     "together": "Todo el itinerario",
@@ -779,7 +836,8 @@ def booking_options_a_df(results):
                     "returning": "Vuelta",
                 }[section],
                 "Proveedor": data.get("book_with", ""),
-                "Precio": data.get("price"),
+                "Precio total": float(precio) if pd.notna(precio) else None,
+                "Precio/persona": float(precio_persona) if precio_persona is not None else None,
                 "Billetes separados": "Sí" if separate else "No",
                 "Equipaje": " · ".join(map(str, baggage)) if baggage else "",
                 "Comercializado como": ", ".join(data.get("marketed_as", []) or []),
@@ -787,7 +845,7 @@ def booking_options_a_df(results):
     return pd.DataFrame(rows)
 
 
-def mostrar_booking_options(booking_token, key_prefix):
+def mostrar_booking_options(booking_token, key_prefix, num_pasajeros=1):
     if not booking_token:
         st.info("Google no devolvió un `booking_token` para este itinerario.")
         return
@@ -804,7 +862,7 @@ def mostrar_booking_options(booking_token, key_prefix):
                     texto = " · ".join(map(str, valores)) if isinstance(valores, list) else str(valores)
                     st.write(f"- **{tramo.capitalize()}**: {texto}")
 
-            booking_df = booking_options_a_df(booking_result)
+            booking_df = booking_options_a_df(booking_result, num_pasajeros=num_pasajeros)
             if booking_df.empty:
                 st.warning("No se han devuelto opciones de compra para este vuelo.")
             else:
@@ -903,6 +961,152 @@ def build_flight_params(
         params["deep_search"] = "true"
 
     return params
+
+
+def build_oneway_params_from_selected(base_params, selected_row):
+    """Construye una búsqueda one-way para valorar por separado un trayecto seleccionado."""
+    params = dict(base_params)
+
+    # Los parámetros de round-trip no son válidos en type=2.
+    for key in (
+        "return_date",
+        "return_times",
+        "departure_token",
+        "booking_token",
+        "multi_city_json",
+        "selected_flights_json",
+    ):
+        params.pop(key, None)
+
+    params["type"] = "2"
+    params["departure_id"] = selected_row.get("_Origen_IATA", "")
+    params["arrival_id"] = selected_row.get("_Destino_IATA", "")
+    params["outbound_date"] = str(selected_row.get("Fecha Salida", ""))
+
+    # Para el desglose interesa localizar el mismo vuelo, no volver a aplicar
+    # la franja horaria original de la ida a una posible vuelta.
+    params.pop("outbound_times", None)
+    return params
+
+
+def obtener_precio_trayecto_separado(base_params, selected_row, num_pasajeros):
+    """Busca el precio one-way del mismo itinerario seleccionado.
+
+    Devuelve (precio_total, precio_por_persona, calidad_match).
+    Si el mismo vuelo no aparece como one-way, usa el precio mínimo de una
+    alternativa comparable para ese aeropuerto/fecha y lo marca como estimación.
+    """
+    try:
+        leg_params = build_oneway_params_from_selected(base_params, selected_row)
+        if not leg_params.get("departure_id") or not leg_params.get("arrival_id") or not leg_params.get("outbound_date"):
+            return None, None, "no_disponible"
+
+        result = serp_search(leg_params)
+        leg_df = vuelos_a_df(result, num_pasajeros=num_pasajeros)
+        if leg_df.empty or not leg_df["Precio_Num"].notna().any():
+            return None, None, "no_disponible"
+
+        exact = leg_df[
+            (leg_df["Vuelo"] == selected_row.get("Vuelo", ""))
+            & (leg_df["_Origen_IATA"] == selected_row.get("_Origen_IATA", ""))
+            & (leg_df["_Destino_IATA"] == selected_row.get("_Destino_IATA", ""))
+            & (leg_df["Fecha Salida"] == selected_row.get("Fecha Salida", ""))
+            & (leg_df["Hora Salida"] == selected_row.get("Hora Salida", ""))
+        ]
+
+        if not exact.empty and exact["Precio_Num"].notna().any():
+            best = exact.sort_values("Precio_Num", na_position="last").iloc[0]
+            return float(best["Precio_Num"]), float(best["Precio_Persona_Num"]), "mismo_vuelo"
+
+        # Fallback: precio one-way mínimo para la misma ruta y fecha.
+        best = leg_df.sort_values("Precio_Num", na_position="last").iloc[0]
+        return float(best["Precio_Num"]), float(best["Precio_Persona_Num"]), "alternativa"
+
+    except Exception:
+        return None, None, "no_disponible"
+
+
+def mostrar_resumen_precios_trayectos(base_params, outbound_row, return_row, num_pasajeros):
+    """Muestra ida, vuelta y total desglosado, además del round-trip real de Google."""
+    with st.spinner("Calculando el desglose ida / vuelta..."):
+        ida_total, ida_pp, ida_match = obtener_precio_trayecto_separado(
+            base_params, outbound_row, num_pasajeros
+        )
+        vuelta_total, vuelta_pp, vuelta_match = obtener_precio_trayecto_separado(
+            base_params, return_row, num_pasajeros
+        )
+
+    roundtrip_total = pd.to_numeric(return_row.get("Precio_Num"), errors="coerce")
+    roundtrip_pp = (
+        float(roundtrip_total) / max(1, int(num_pasajeros))
+        if pd.notna(roundtrip_total)
+        else None
+    )
+
+    st.markdown("### 💶 Desglose del precio")
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        st.metric(
+            "🛫 Ida",
+            f"{ida_total:.0f} €" if ida_total is not None else "N/D",
+            help="Precio del trayecto comprado como billete solo ida.",
+        )
+        if ida_pp is not None:
+            st.caption(f"{ida_pp:.0f} € por persona")
+
+    with c2:
+        st.metric(
+            "🛬 Vuelta",
+            f"{vuelta_total:.0f} €" if vuelta_total is not None else "N/D",
+            help="Precio del trayecto comprado como billete solo ida en el sentido de vuelta.",
+        )
+        if vuelta_pp is not None:
+            st.caption(f"{vuelta_pp:.0f} € por persona")
+
+    suma_total = None
+    suma_pp = None
+    if ida_total is not None and vuelta_total is not None:
+        suma_total = ida_total + vuelta_total
+        suma_pp = suma_total / max(1, int(num_pasajeros))
+
+    with c3:
+        st.metric(
+            "🧮 Ida + vuelta separadas",
+            f"{suma_total:.0f} €" if suma_total is not None else "N/D",
+        )
+        if suma_pp is not None:
+            st.caption(f"{suma_pp:.0f} € por persona")
+
+    with c4:
+        st.metric(
+            "🎟️ Tarifa ida/vuelta Google",
+            f"{float(roundtrip_total):.0f} €" if pd.notna(roundtrip_total) else "N/D",
+            help="Precio real de la combinación round-trip seleccionada por Google Flights.",
+        )
+        if roundtrip_pp is not None:
+            st.caption(f"{roundtrip_pp:.0f} € por persona")
+
+    if ida_match == "alternativa" or vuelta_match == "alternativa":
+        st.info(
+            "Para algún tramo Google no publicó exactamente el mismo vuelo como tarifa one-way. "
+            "En ese caso se muestra la alternativa one-way más barata de la misma ruta y fecha."
+        )
+
+    if suma_total is not None and pd.notna(roundtrip_total):
+        diferencia = float(roundtrip_total) - suma_total
+        if abs(diferencia) >= 1:
+            if diferencia < 0:
+                st.success(
+                    f"Comprar la tarifa ida/vuelta conjunta ahorra aproximadamente {abs(diferencia):.0f} € "
+                    "frente a comprar ambos trayectos por separado."
+                )
+            else:
+                st.info(
+                    f"Comprar ambos trayectos por separado sería aproximadamente {abs(diferencia):.0f} € "
+                    "más barato que la tarifa ida/vuelta seleccionada."
+                )
+
 
 # ============================================================
 # FECHAS FLEXIBLES
@@ -1043,13 +1247,28 @@ if modo == "🔎 Buscar vuelos":
 
     st.sidebar.header("Configuración de Búsqueda")
 
-    # Cuadro de búsqueda + desplegable acotado (filtran por subcadena o fuzzy match)
-    origen_seleccion = selector_aeropuerto("Origen (Ciudad o Aeropuerto)", def_origen, "origen")
-    destino_seleccion = selector_aeropuerto("Destino (Ciudad o Aeropuerto)", def_destino, "destino")
+    # Selección múltiple, como en Google Flights: se pueden combinar varias
+    # ciudades/aeropuertos de salida y varias de llegada en una sola búsqueda.
+    origen_seleccion = selector_aeropuertos(
+        "Origen (una o varias ciudades/aeropuertos)",
+        def_origen,
+        "origen",
+    )
+    destino_seleccion = selector_aeropuertos(
+        "Destino (una o varias ciudades/aeropuertos)",
+        def_destino,
+        "destino",
+    )
 
-    # Extracción automática del código IATA protegiendo contra valores nulos
-    origen = origen_seleccion.split("(")[-1].replace(")", "").strip() if origen_seleccion else ""
-    destino = destino_seleccion.split("(")[-1].replace(")", "").strip() if destino_seleccion else ""
+    origenes_iata = extraer_iatas(origen_seleccion)
+    destinos_iata = extraer_iatas(destino_seleccion)
+    origen = ",".join(origenes_iata)
+    destino = ",".join(destinos_iata)
+
+    st.sidebar.caption(
+        "Puedes añadir varios aeropuertos. La consulta se envía a Google Flights "
+        "como una única búsqueda combinada."
+    )
     fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=def_ida)
     buscar_vuelta = st.sidebar.checkbox(
         "Ida y vuelta",
@@ -1170,9 +1389,9 @@ if modo == "🔎 Buscar vuelos":
     )
 
     if buscar_btn:
-        if not origen or not destino:
-            st.error("Indica un origen y un destino.")
-        elif origen == destino:
+        if not origenes_iata or not destinos_iata:
+            st.error("Indica al menos un origen y un destino.")
+        elif len(origenes_iata) == 1 and len(destinos_iata) == 1 and origenes_iata[0] == destinos_iata[0]:
             st.error("Origen y destino no pueden ser iguales.")
         else:
             st.query_params["origen"] = origen
@@ -1183,8 +1402,16 @@ if modo == "🔎 Buscar vuelos":
             elif "vuelta" in st.query_params:
                 del st.query_params["vuelta"]
 
-            orig_query = obtener_lista_aeropuertos(origen, radio_km_origen) if buscar_cercanos_origen else origen
-            dest_query = obtener_lista_aeropuertos(destino, radio_km_destino) if buscar_cercanos_destino else destino
+            orig_query = (
+                expandir_aeropuertos_cercanos(origenes_iata, radio_km_origen)
+                if buscar_cercanos_origen
+                else origen
+            )
+            dest_query = (
+                expandir_aeropuertos_cercanos(destinos_iata, radio_km_destino)
+                if buscar_cercanos_destino
+                else destino
+            )
 
             params = build_flight_params(
                 origin=orig_query,
@@ -1214,7 +1441,7 @@ if modo == "🔎 Buscar vuelos":
             try:
                 with st.status("Buscando tarifas...", expanded=True) as status:
                     result = serp_search(params)
-                    df = vuelos_a_df(result)
+                    df = vuelos_a_df(result, num_pasajeros=int(adultos + ninos))
                     status.update(label="¡Búsqueda completada!", state="complete", expanded=False)
 
                 st.session_state["flight_search"] = {
@@ -1227,6 +1454,10 @@ if modo == "🔎 Buscar vuelos":
                     "return_date": fecha_vuelta if buscar_vuelta else None,
                     "travel_class": CABIN_CLASSES[clase_sel],
                     "adults": adultos,
+                    "children": ninos,
+                    "passengers": int(adultos + ninos),
+                    "origin_ids": origenes_iata,
+                    "destination_ids": destinos_iata,
                     "flexible_ida": flex_ida,
                     "radius_ida": radio_ida,
                     "flexible_vuelta": flex_vuelta,
@@ -1268,7 +1499,10 @@ if modo == "🔎 Buscar vuelos":
 
         if not df.empty and df["Precio_Num"].notna().any():
             min_price = df["Precio_Num"].min()
-            st.metric("💰 Mejor precio detectado", f"{int(min_price)} €")
+            min_pp = min_price / max(1, int(search_state.get("passengers", 1)))
+            c_precio_total, c_precio_pp = st.columns(2)
+            c_precio_total.metric("💰 Mejor precio agregado", f"{int(round(min_price))} €")
+            c_precio_pp.metric("👤 Mejor precio por persona", f"{int(round(min_pp))} €")
 
             triggered = alertas_activadas(
                 search_state["origin"],
@@ -1352,7 +1586,11 @@ if modo == "🔎 Buscar vuelos":
                     format_func=lambda i: flight_label(df.loc[i]),
                     key="oneway_booking_select",
                 )
-                mostrar_booking_options(df.loc[selected_idx, "_booking_token"], key_prefix=f"oneway_{selected_idx}")
+                mostrar_booking_options(
+                    df.loc[selected_idx, "_booking_token"],
+                    key_prefix=f"oneway_{selected_idx}",
+                    num_pasajeros=search_state.get("passengers", 1),
+                )
 
         if is_roundtrip and not df.empty:
             valid_outbound = [idx for idx in df.index if df.loc[idx, "_departure_token"]]
@@ -1373,7 +1611,7 @@ if modo == "🔎 Buscar vuelos":
                     try:
                         with st.spinner("Buscando vueltas compatibles..."):
                             return_result = serp_search(return_params)
-                            return_df = vuelos_a_df(return_result)
+                            return_df = vuelos_a_df(return_result, num_pasajeros=search_state.get("passengers", 1))
                         st.session_state["return_search"] = {
                             "departure_token": selected_departure_token,
                             "result": return_result,
@@ -1399,11 +1637,29 @@ if modo == "🔎 Buscar vuelos":
                                 key="roundtrip_return_select",
                             )
                             selected_row = return_df.loc[selected_return_idx]
+                            selected_outbound_row = df.loc[selected_outbound_idx]
+
                             if pd.notna(selected_row["Precio_Num"]):
-                                st.metric("💰 Precio total de la combinación", f"{int(selected_row['Precio_Num'])} €")
+                                total_comb = float(selected_row["Precio_Num"])
+                                pp_comb = total_comb / max(1, int(search_state.get("passengers", 1)))
+                                c_total, c_pp = st.columns(2)
+                                c_total.metric("💰 Precio total de la combinación", f"{total_comb:.0f} €")
+                                c_pp.metric("👤 Precio por persona", f"{pp_comb:.0f} €")
+
+                            # Desglose económico por trayecto. Estas dos consultas one-way
+                            # quedan cacheadas por serp_search, por lo que no se repiten
+                            # mientras los parámetros sean idénticos.
+                            mostrar_resumen_precios_trayectos(
+                                params,
+                                selected_outbound_row,
+                                selected_row,
+                                search_state.get("passengers", 1),
+                            )
+
                             mostrar_booking_options(
                                 selected_row["_booking_token"],
                                 key_prefix=f"roundtrip_{selected_return_idx}",
+                                num_pasajeros=search_state.get("passengers", 1),
                             )
 
 # ============================================================

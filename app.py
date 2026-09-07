@@ -21,6 +21,8 @@ HL = "es"
 GL = "es"
 CACHE_TTL = 3600
 DB_PATH = Path("flight_history.sqlite3")
+ANYWHERE_OPTION = "🌍 Cualquier lugar"
+ANYWHERE_STORAGE_KEY = "__ANYWHERE__"
 
 page_bg_img = """
 <style>
@@ -232,6 +234,8 @@ def extraer_iatas(selecciones):
     """Extrae y deduplica los códigos IATA de las opciones seleccionadas."""
     codigos = []
     for seleccion in selecciones or []:
+        if seleccion == ANYWHERE_OPTION:
+            continue
         try:
             codigo = seleccion.rsplit("(", 1)[-1].replace(")", "").strip().upper()
         except Exception:
@@ -241,18 +245,31 @@ def extraer_iatas(selecciones):
     return codigos
 
 
-def selector_aeropuertos(label, iatas_por_defecto, key_prefix):
+def seleccion_cualquier_lugar(selecciones):
+    return ANYWHERE_OPTION in (selecciones or [])
+
+
+def selector_aeropuertos(label, iatas_por_defecto, key_prefix, permitir_cualquier_lugar=False, cualquier_lugar_por_defecto=False):
     """Permite seleccionar uno o varios aeropuertos/ciudades simultáneamente.
 
     SerpApi acepta múltiples departure_id / arrival_id separados por comas.
-    El buscador de Streamlit filtra por ciudad, país o IATA mientras se escribe.
+    Para el destino también permite omitir arrival_id, que equivale a
+    "Cualquier lugar" (Fly to anywhere).
     """
     defaults = _opciones_desde_iatas(iatas_por_defecto, opciones_busqueda)
+    if permitir_cualquier_lugar and cualquier_lugar_por_defecto:
+        defaults = [ANYWHERE_OPTION]
+    options = ([ANYWHERE_OPTION] if permitir_cualquier_lugar else []) + opciones_busqueda
+    placeholder = (
+        "🌍 Cualquier lugar o añade destinos..."
+        if permitir_cualquier_lugar
+        else "🔎 Añade una o varias ciudades/aeropuertos..."
+    )
     return st.sidebar.multiselect(
         label,
-        options=opciones_busqueda,
+        options=options,
         default=defaults,
-        placeholder="🔎 Añade una o varias ciudades/aeropuertos...",
+        placeholder=placeholder,
         key=f"{key_prefix}_multi",
     )
 
@@ -454,11 +471,39 @@ def expandir_aeropuertos_cercanos(iatas_base, radio_km, max_por_base=5):
 
 
 def init_db():
+    """Inicializa las tablas locales usadas por histórico, alertas y presets.
+
+    Nota: en Streamlit Community Cloud el fichero SQLite local es efímero.
+    La capa se mantiene aislada para poder sustituirla más adelante por una
+    base de datos persistente sin cambiar la lógica de la aplicación.
+    """
     try:
         with sqlite3.connect(DB_PATH) as conn:
-            # ... (Tus tablas anteriores siguen aquí) ...
-            
-            # NUEVA TABLA: Búsquedas guardadas
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    outbound_date TEXT NOT NULL,
+                    return_date TEXT,
+                    travel_class TEXT,
+                    adults INTEGER,
+                    price REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS price_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    outbound_date TEXT NOT NULL,
+                    return_date TEXT,
+                    max_price REAL NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS saved_searches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -471,29 +516,126 @@ def init_db():
     except Exception:
         pass
 
-# --- NUEVAS FUNCIONES DE MEMORIA ---
+
 def guardar_busqueda(name, config_dict):
+    name = (name or "").strip()
+    if not name:
+        return False
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
                 "INSERT INTO saved_searches (name, config, created_at) VALUES (?, ?, ?)",
-                (name, json.dumps(config_dict), datetime.datetime.now().isoformat())
+                (name, json.dumps(config_dict, ensure_ascii=False), datetime.datetime.now().isoformat(timespec="seconds"))
             )
             conn.commit()
-    except Exception: pass
+        return True
+    except Exception:
+        return False
+
 
 def cargar_busquedas():
     try:
         with sqlite3.connect(DB_PATH) as conn:
-            return pd.read_sql_query("SELECT id, name, config FROM saved_searches ORDER BY created_at DESC", conn)
-    except Exception: return pd.DataFrame()
+            return pd.read_sql_query(
+                "SELECT id, name, config, created_at FROM saved_searches ORDER BY created_at DESC",
+                conn,
+            )
+    except Exception:
+        return pd.DataFrame()
+
 
 def eliminar_busqueda(b_id):
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("DELETE FROM saved_searches WHERE id = ?", (int(b_id),))
             conn.commit()
-    except Exception: pass
+        return True
+    except Exception:
+        return False
+
+
+def construir_config_guardable(search_state):
+    """Extrae únicamente configuración reproducible, nunca resultados/tokens de selección."""
+    return {
+        "version": 1,
+        "params": dict(search_state.get("params", {})),
+        "origin": search_state.get("origin", ""),
+        "destination": search_state.get("destination", ""),
+        "origin_ids": list(search_state.get("origin_ids", [])),
+        "destination_ids": list(search_state.get("destination_ids", [])),
+        "destination_anywhere": bool(search_state.get("destination_anywhere", False)),
+        "outbound_date": str(search_state.get("outbound_date", "")),
+        "return_date": str(search_state.get("return_date", "")) if search_state.get("return_date") else None,
+        "travel_class": search_state.get("travel_class", "1"),
+        "adults": int(search_state.get("adults", 1)),
+        "children": int(search_state.get("children", 0)),
+        "passengers": int(search_state.get("passengers", 1)),
+        "flexible_ida": bool(search_state.get("flexible_ida", False)),
+        "radius_ida": int(search_state.get("radius_ida", 0)),
+        "flexible_vuelta": bool(search_state.get("flexible_vuelta", False)),
+        "radius_vuelta": int(search_state.get("radius_vuelta", 0)),
+    }
+
+
+def resumen_config_guardada(config):
+    origen = config.get("origin") or "Origen automático"
+    destino = "Cualquier lugar" if config.get("destination_anywhere") else (config.get("destination") or "—")
+    ida = config.get("outbound_date") or "—"
+    vuelta = config.get("return_date")
+    fechas = f"{ida} → {vuelta}" if vuelta else ida
+    pax = config.get("passengers", 1)
+    return f"{origen} → {destino} · {fechas} · {pax} viajero(s)"
+
+
+def ejecutar_busqueda_guardada(config):
+    """Repite una configuración guardada y reconstruye flight_search."""
+    params = dict(config.get("params") or {})
+    if not params:
+        raise ValueError("La búsqueda guardada no contiene parámetros de SerpApi.")
+
+    result = serp_search(params)
+    pasajeros = max(1, int(config.get("passengers", 1)))
+    df = vuelos_a_df(result, num_pasajeros=pasajeros)
+
+    outbound_date = datetime.datetime.strptime(config["outbound_date"], "%Y-%m-%d").date()
+    return_date = None
+    if config.get("return_date"):
+        return_date = datetime.datetime.strptime(config["return_date"], "%Y-%m-%d").date()
+
+    state = {
+        "params": params,
+        "result": result,
+        "df": df,
+        "origin": config.get("origin", ""),
+        "destination": config.get("destination", ANYWHERE_STORAGE_KEY if config.get("destination_anywhere") else ""),
+        "outbound_date": outbound_date,
+        "return_date": return_date,
+        "travel_class": config.get("travel_class", params.get("travel_class", "1")),
+        "adults": int(config.get("adults", params.get("adults", 1))),
+        "children": int(config.get("children", params.get("children", 0))),
+        "passengers": pasajeros,
+        "origin_ids": list(config.get("origin_ids", [])),
+        "destination_ids": list(config.get("destination_ids", [])),
+        "destination_anywhere": bool(config.get("destination_anywhere", False)),
+        "flexible_ida": bool(config.get("flexible_ida", False)),
+        "radius_ida": int(config.get("radius_ida", 0)),
+        "flexible_vuelta": bool(config.get("flexible_vuelta", False)),
+        "radius_vuelta": int(config.get("radius_vuelta", 0)),
+    }
+    st.session_state["flight_search"] = state
+    st.session_state.pop("return_search", None)
+
+    if not df.empty and df["Precio_Num"].notna().any():
+        guardar_precio(
+            state["origin"],
+            state["destination"],
+            outbound_date,
+            return_date,
+            state["travel_class"],
+            state["adults"],
+            df["Precio_Num"].min(),
+        )
+    return state
 
 
 def guardar_precio(origin, destination, outbound_date, return_date, travel_class, adults, price):
@@ -907,8 +1049,6 @@ def build_flight_params(
 
     params = {
         "engine": "google_flights",
-        "departure_id": origin,
-        "arrival_id": destination,
         "outbound_date": outbound_date.strftime("%Y-%m-%d"),
         "type": "1" if is_roundtrip else "2",
         "travel_class": travel_class,
@@ -922,6 +1062,11 @@ def build_flight_params(
         "gl": GL,
         "sort_by": sort_by,
     }
+
+    if origin:
+        params["departure_id"] = origin
+    if destination:
+        params["arrival_id"] = destination
 
     if is_roundtrip:
         params["return_date"] = return_date.strftime("%Y-%m-%d")
@@ -1228,6 +1373,9 @@ if modo == "🔎 Buscar vuelos":
     hoy = datetime.date.today()
     def_origen = st.query_params.get("origen", "MAD")
     def_destino = st.query_params.get("destino", "BER")
+    def_destino_anywhere = def_destino == ANYWHERE_STORAGE_KEY
+    if def_destino_anywhere:
+        def_destino = ""
 
     try:
         def_ida = datetime.datetime.strptime(st.query_params.get("ida", ""), "%Y-%m-%d").date()
@@ -1258,17 +1406,31 @@ if modo == "🔎 Buscar vuelos":
         "Destino (una o varias ciudades/aeropuertos)",
         def_destino,
         "destino",
+        permitir_cualquier_lugar=True,
+        cualquier_lugar_por_defecto=def_destino_anywhere,
     )
 
     origenes_iata = extraer_iatas(origen_seleccion)
     destinos_iata = extraer_iatas(destino_seleccion)
+    destino_anywhere = seleccion_cualquier_lugar(destino_seleccion)
+    # Si se marca Cualquier lugar, prevalece sobre cualquier destino concreto
+    # que pudiera seguir seleccionado visualmente en el multiselect.
+    if destino_anywhere:
+        destinos_iata = []
     origen = ",".join(origenes_iata)
-    destino = ",".join(destinos_iata)
+    # Para Fly to anywhere NO se envía arrival_id. serp_search elimina valores vacíos.
+    destino = "" if destino_anywhere else ",".join(destinos_iata)
 
-    st.sidebar.caption(
-        "Puedes añadir varios aeropuertos. La consulta se envía a Google Flights "
-        "como una única búsqueda combinada."
-    )
+    if destino_anywhere:
+        st.sidebar.caption(
+            "🌍 Cualquier lugar: Google Flights decidirá los destinos. En ida y vuelta, "
+            "la vuelta será desde el destino elegido hacia tu origen."
+        )
+    else:
+        st.sidebar.caption(
+            "Puedes añadir varios aeropuertos. La consulta se envía a Google Flights "
+            "como una única búsqueda combinada."
+        )
     fecha_ida = st.sidebar.date_input("Fecha de Ida", min_value=hoy, value=def_ida)
     buscar_vuelta = st.sidebar.checkbox(
         "Ida y vuelta",
@@ -1343,7 +1505,14 @@ if modo == "🔎 Buscar vuelos":
     # Fila 1: aeropuertos cercanos (origen/destino).
     col_cerc_o, col_cerc_d = st.sidebar.columns(2)
     buscar_cercanos_origen = col_cerc_o.checkbox("Cercanos salida", value=False)
-    buscar_cercanos_destino = col_cerc_d.checkbox("Cercanos llegada", value=False)
+    buscar_cercanos_destino = col_cerc_d.checkbox(
+        "Cercanos llegada",
+        value=False,
+        disabled=destino_anywhere,
+        help="No aplica cuando el destino es Cualquier lugar." if destino_anywhere else None,
+    )
+    if destino_anywhere:
+        buscar_cercanos_destino = False
     radio_km_origen = st.sidebar.slider("Radio de salida (km)", min_value=50, max_value=600, value=100, step=10) if buscar_cercanos_origen else 0
     radio_km_destino = st.sidebar.slider("Radio de llegada (km)", min_value=50, max_value=600, value=100, step=10) if buscar_cercanos_destino else 0
 
@@ -1378,6 +1547,97 @@ if modo == "🔎 Buscar vuelos":
     if coste_estimado > 10:
         st.sidebar.warning(f"⚠️ La flexibilidad cruzada lanzará {coste_estimado} peticiones simultáneas a la API.")
 
+    # --------------------------------------------------------
+    # BÚSQUEDAS GUARDADAS
+    # --------------------------------------------------------
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("⭐ Búsquedas guardadas", expanded=False):
+        saved_df = cargar_busquedas()
+        if saved_df.empty:
+            st.caption("Todavía no hay configuraciones guardadas.")
+        else:
+            saved_ids = saved_df["id"].astype(int).tolist()
+            saved_id = st.selectbox(
+                "Configuración",
+                options=saved_ids,
+                format_func=lambda sid: saved_df.loc[saved_df["id"] == sid, "name"].iloc[0],
+                key="saved_search_select",
+            )
+            saved_row = saved_df.loc[saved_df["id"] == saved_id].iloc[0]
+            try:
+                saved_config = json.loads(saved_row["config"])
+                st.caption(resumen_config_guardada(saved_config))
+                if saved_row.get("created_at"):
+                    st.caption(f"Guardada: {str(saved_row['created_at']).replace('T', ' ')[:19]}")
+
+                saved_q_ida = 1 + 2 * int(saved_config.get("radius_ida", 0)) if saved_config.get("flexible_ida") else 1
+                saved_q_vuelta = 1 + 2 * int(saved_config.get("radius_vuelta", 0)) if saved_config.get("flexible_vuelta") else 1
+                saved_cost = saved_q_ida * saved_q_vuelta
+                if saved_cost > 1:
+                    st.warning(f"Esta configuración flexible puede comprobar hasta {saved_cost} cruces de fechas.")
+
+                st.download_button(
+                    "⬇️ Exportar copia del preset",
+                    data=json.dumps(saved_config, ensure_ascii=False, indent=2),
+                    file_name=f"busqueda_{saved_id}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    key=f"export_saved_{saved_id}",
+                )
+
+                c_run, c_del = st.columns(2)
+                repetir_guardada = c_run.button(
+                    "▶️ Repetir",
+                    use_container_width=True,
+                    key=f"run_saved_{saved_id}",
+                )
+                borrar_guardada = c_del.button(
+                    "🗑️ Eliminar",
+                    use_container_width=True,
+                    key=f"delete_saved_{saved_id}",
+                )
+
+                if borrar_guardada:
+                    if eliminar_busqueda(saved_id):
+                        st.success("Búsqueda eliminada.")
+                        st.rerun()
+                    else:
+                        st.error("No se pudo eliminar la búsqueda.")
+
+                if repetir_guardada:
+                    try:
+                        with st.spinner("Repitiendo búsqueda guardada..."):
+                            ejecutar_busqueda_guardada(saved_config)
+                        st.success("Búsqueda actualizada con precios actuales.")
+                    except Exception as exc:
+                        st.error(f"No se pudo repetir la búsqueda: {exc}")
+            except Exception:
+                st.error("La configuración guardada no se puede leer.")
+
+        st.markdown("---")
+        preset_file = st.file_uploader(
+            "Importar preset (.json)",
+            type=["json"],
+            key="import_saved_search_file",
+        )
+        if preset_file is not None:
+            try:
+                imported_config = json.loads(preset_file.getvalue().decode("utf-8"))
+                st.caption(resumen_config_guardada(imported_config))
+                imported_name = st.text_input(
+                    "Nombre para el preset importado",
+                    value=Path(preset_file.name).stem,
+                    key="import_saved_search_name",
+                )
+                if st.button("📥 Importar", use_container_width=True, key="import_saved_search_btn"):
+                    if guardar_busqueda(imported_name, imported_config):
+                        st.success("Preset importado.")
+                        st.rerun()
+                    else:
+                        st.error("No se pudo importar el preset.")
+            except Exception:
+                st.error("El archivo no contiene una configuración válida.")
+
     mostrar_consumo_api(coste_estimado)
 
     # ---> ESTE ES EL BOTÓN QUE FALTA <---
@@ -1389,13 +1649,15 @@ if modo == "🔎 Buscar vuelos":
     )
 
     if buscar_btn:
-        if not origenes_iata or not destinos_iata:
-            st.error("Indica al menos un origen y un destino.")
-        elif len(origenes_iata) == 1 and len(destinos_iata) == 1 and origenes_iata[0] == destinos_iata[0]:
+        if not origenes_iata:
+            st.error("Indica al menos un origen. 'Cualquier lugar' se aplica al destino, no al aeropuerto de salida.")
+        elif (not destino_anywhere) and (not destinos_iata):
+            st.error("Indica al menos un destino o selecciona 'Cualquier lugar'.")
+        elif (not destino_anywhere) and len(origenes_iata) == 1 and len(destinos_iata) == 1 and origenes_iata[0] == destinos_iata[0]:
             st.error("Origen y destino no pueden ser iguales.")
         else:
             st.query_params["origen"] = origen
-            st.query_params["destino"] = destino
+            st.query_params["destino"] = ANYWHERE_STORAGE_KEY if destino_anywhere else destino
             st.query_params["ida"] = fecha_ida.strftime("%Y-%m-%d")
             if buscar_vuelta:
                 st.query_params["vuelta"] = fecha_vuelta.strftime("%Y-%m-%d")
@@ -1408,9 +1670,13 @@ if modo == "🔎 Buscar vuelos":
                 else origen
             )
             dest_query = (
-                expandir_aeropuertos_cercanos(destinos_iata, radio_km_destino)
-                if buscar_cercanos_destino
-                else destino
+                ""
+                if destino_anywhere
+                else (
+                    expandir_aeropuertos_cercanos(destinos_iata, radio_km_destino)
+                    if buscar_cercanos_destino
+                    else destino
+                )
             )
 
             params = build_flight_params(
@@ -1449,7 +1715,8 @@ if modo == "🔎 Buscar vuelos":
                     "result": result,
                     "df": df,
                     "origin": origen,
-                    "destination": destino,
+                    "destination": ANYWHERE_STORAGE_KEY if destino_anywhere else destino,
+                    "destination_anywhere": destino_anywhere,
                     "outbound_date": fecha_ida,
                     "return_date": fecha_vuelta if buscar_vuelta else None,
                     "travel_class": CABIN_CLASSES[clase_sel],
@@ -1468,7 +1735,7 @@ if modo == "🔎 Buscar vuelos":
                 if not df.empty and df["Precio_Num"].notna().any():
                     guardar_precio(
                         origen,
-                        destino,
+                        ANYWHERE_STORAGE_KEY if destino_anywhere else destino,
                         fecha_ida,
                         fecha_vuelta if buscar_vuelta else None,
                         CABIN_CLASSES[clase_sel],
@@ -1554,6 +1821,25 @@ if modo == "🔎 Buscar vuelos":
             st.caption("Aún no hay histórico suficiente para esta búsqueda.")
         else:
             st.line_chart(hist.set_index("timestamp")[["price"]])
+
+        with st.expander("⭐ Guardar esta configuración de búsqueda"):
+            st.caption(
+                "Guarda los parámetros, no los resultados. Al repetirla se vuelve a consultar SerpApi "
+                "y el nuevo precio se añade al histórico local."
+            )
+            default_name_dest = "Cualquier lugar" if search_state.get("destination_anywhere") else search_state.get("destination", "")
+            default_name = f"{search_state.get('origin', '')} → {default_name_dest}"
+            nombre_guardado = st.text_input(
+                "Nombre",
+                value=default_name,
+                key="saved_search_name",
+            )
+            if st.button("💾 Guardar configuración", key="save_current_search_config"):
+                config_guardable = construir_config_guardable(search_state)
+                if guardar_busqueda(nombre_guardado, config_guardable):
+                    st.success("Configuración guardada. Ya aparecerá en 'Búsquedas guardadas' del menú lateral.")
+                else:
+                    st.error("No se pudo guardar la configuración. Comprueba el nombre y el almacenamiento local.")
 
         with st.expander("🔔 Crear alerta de precio"):
             st.caption(

@@ -253,8 +253,10 @@ def selector_aeropuertos(label, iatas_por_defecto, key_prefix, permitir_cualquie
     """Permite seleccionar uno o varios aeropuertos/ciudades simultáneamente.
 
     SerpApi acepta múltiples departure_id / arrival_id separados por comas.
-    Para el destino también permite omitir arrival_id, que equivale a
-    "Cualquier lugar" (Fly to anywhere).
+    Para "Cualquier lugar" NO usamos engine=google_flights sin arrival_id,
+    porque ese endpoint puede rechazar la petición con "Missing arrival_id".
+    La búsqueda abierta se resuelve con Google Travel Explore y, después de
+    elegir destino, se vuelve a Google Flights para mostrar vuelos concretos.
     """
     defaults = _opciones_desde_iatas(iatas_por_defecto, opciones_busqueda)
     if permitir_cualquier_lugar and cualquier_lugar_por_defecto:
@@ -557,8 +559,9 @@ def eliminar_busqueda(b_id):
 def construir_config_guardable(search_state):
     """Extrae únicamente configuración reproducible, nunca resultados/tokens de selección."""
     return {
-        "version": 1,
+        "version": 2,
         "params": dict(search_state.get("params", {})),
+        "detail_params": dict(search_state.get("detail_params", {})),
         "origin": search_state.get("origin", ""),
         "destination": search_state.get("destination", ""),
         "origin_ids": list(search_state.get("origin_ids", [])),
@@ -588,26 +591,42 @@ def resumen_config_guardada(config):
 
 
 def ejecutar_busqueda_guardada(config):
-    """Repite una configuración guardada y reconstruye flight_search."""
+    """Repite una configuración guardada y reconstruye `flight_search`."""
     params = dict(config.get("params") or {})
     if not params:
         raise ValueError("La búsqueda guardada no contiene parámetros de SerpApi.")
 
+    destino_anywhere = bool(config.get("destination_anywhere", False))
+
+    # Compatibilidad con presets creados por la versión anterior: aquella
+    # intentaba `google_flights` sin arrival_id y SerpApi respondía con
+    # "Missing arrival_id parameter". Los migramos automáticamente a Explore.
+    if destino_anywhere and params.get("engine") != "google_travel_explore":
+        params = convertir_params_flights_a_explore(params)
+
     result = serp_search(params)
     pasajeros = max(1, int(config.get("passengers", 1)))
-    df = vuelos_a_df(result, num_pasajeros=pasajeros)
+    if destino_anywhere:
+        df = destinos_anywhere_a_df(result, num_pasajeros=pasajeros)
+    else:
+        df = vuelos_a_df(result, num_pasajeros=pasajeros)
 
     outbound_date = datetime.datetime.strptime(config["outbound_date"], "%Y-%m-%d").date()
     return_date = None
     if config.get("return_date"):
         return_date = datetime.datetime.strptime(config["return_date"], "%Y-%m-%d").date()
 
+    detail_params = dict(config.get("detail_params") or {})
+    if destino_anywhere and not detail_params:
+        detail_params = detalle_flights_desde_explore(params)
+
     state = {
         "params": params,
+        "detail_params": detail_params,
         "result": result,
         "df": df,
         "origin": config.get("origin", ""),
-        "destination": config.get("destination", ANYWHERE_STORAGE_KEY if config.get("destination_anywhere") else ""),
+        "destination": config.get("destination", ANYWHERE_STORAGE_KEY if destino_anywhere else ""),
         "outbound_date": outbound_date,
         "return_date": return_date,
         "travel_class": config.get("travel_class", params.get("travel_class", "1")),
@@ -616,7 +635,7 @@ def ejecutar_busqueda_guardada(config):
         "passengers": pasajeros,
         "origin_ids": list(config.get("origin_ids", [])),
         "destination_ids": list(config.get("destination_ids", [])),
-        "destination_anywhere": bool(config.get("destination_anywhere", False)),
+        "destination_anywhere": destino_anywhere,
         "flexible_ida": bool(config.get("flexible_ida", False)),
         "radius_ida": int(config.get("radius_ida", 0)),
         "flexible_vuelta": bool(config.get("flexible_vuelta", False)),
@@ -624,8 +643,9 @@ def ejecutar_busqueda_guardada(config):
     }
     st.session_state["flight_search"] = state
     st.session_state.pop("return_search", None)
+    st.session_state.pop("anywhere_detail", None)
 
-    if not df.empty and df["Precio_Num"].notna().any():
+    if not df.empty and "Precio_Num" in df.columns and df["Precio_Num"].notna().any():
         guardar_precio(
             state["origin"],
             state["destination"],
@@ -1253,6 +1273,107 @@ def mostrar_resumen_precios_trayectos(base_params, outbound_row, return_row, num
                 )
 
 
+
+# ============================================================
+# "CUALQUIER LUGAR": GOOGLE TRAVEL EXPLORE
+# ============================================================
+
+
+def build_anywhere_params(
+    origin,
+    outbound_date,
+    return_date,
+    travel_class,
+    adults,
+    children,
+    infants_seat,
+    infants_lap,
+    bags,
+    stops,
+    include_airlines,
+    exclude_airlines,
+    max_price,
+    max_duration_hours,
+):
+    """Construye una búsqueda abierta de destinos con Google Travel Explore.
+
+    Google Flights (`engine=google_flights`) puede exigir `arrival_id` aunque
+    aparezca como opcional en parte de la documentación. Para descubrir
+    destinos sin `arrival_id`, SerpApi dispone de `google_travel_explore`.
+    """
+    is_roundtrip = return_date is not None
+
+    params = {
+        "engine": "google_travel_explore",
+        "departure_id": origin,
+        "outbound_date": outbound_date.strftime("%Y-%m-%d"),
+        "type": "1" if is_roundtrip else "2",
+        "travel_class": travel_class,
+        "adults": int(adults),
+        "children": int(children),
+        "infants_in_seat": int(infants_seat),
+        "infants_on_lap": int(infants_lap),
+        "bags": int(bags),
+        "travel_mode": "1",  # solo vuelos; evita resultados por carretera
+        "currency": CURRENCY,
+        "hl": HL,
+        "gl": GL,
+    }
+
+    if is_roundtrip:
+        params["return_date"] = return_date.strftime("%Y-%m-%d")
+
+    if stops != "0":
+        params["stops"] = stops
+
+    include_codes = airline_codes(include_airlines)
+    exclude_codes = airline_codes(exclude_airlines)
+    if include_codes:
+        params["include_airlines"] = ",".join(include_codes)
+    elif exclude_codes:
+        params["exclude_airlines"] = ",".join(exclude_codes)
+
+    if max_price and max_price > 0:
+        params["max_price"] = int(max_price)
+
+    if max_duration_hours and max_duration_hours > 0:
+        params["max_duration"] = int(max_duration_hours * 60)
+
+    return params
+
+
+def convertir_params_flights_a_explore(params):
+    """Migra presets antiguos de 'Cualquier lugar' creados con google_flights."""
+    params = dict(params or {})
+    allowed = {
+        "departure_id", "outbound_date", "return_date", "type", "travel_class",
+        "adults", "children", "infants_in_seat", "infants_on_lap", "bags",
+        "currency", "hl", "gl", "stops", "include_airlines", "exclude_airlines",
+        "max_price", "max_duration",
+    }
+    converted = {k: v for k, v in params.items() if k in allowed and v not in (None, "")}
+    converted["engine"] = "google_travel_explore"
+    converted["travel_mode"] = "1"
+    converted.pop("arrival_id", None)
+    return converted
+
+
+def detalle_flights_desde_explore(explore_params):
+    """Crea una plantilla Google Flights para abrir un destino descubierto."""
+    explore_params = dict(explore_params or {})
+    allowed = {
+        "departure_id", "outbound_date", "return_date", "type", "travel_class",
+        "adults", "children", "infants_in_seat", "infants_on_lap", "bags",
+        "currency", "hl", "gl", "stops", "include_airlines", "exclude_airlines",
+        "max_price", "max_duration",
+    }
+    params = {k: v for k, v in explore_params.items() if k in allowed and v not in (None, "")}
+    params["engine"] = "google_flights"
+    params["sort_by"] = "1"
+    params["show_hidden"] = "true"
+    params["deep_search"] = "true"
+    return params
+
 # ============================================================
 # FECHAS FLEXIBLES
 # ============================================================
@@ -1335,6 +1456,57 @@ def explorar_a_df(result):
     df = pd.DataFrame(rows)
     df["Vuelo (€)"] = pd.to_numeric(df["Vuelo (€)"], errors="coerce")
     return df.sort_values("Vuelo (€)", na_position="last").reset_index(drop=True)
+
+
+
+def destinos_anywhere_a_df(result, num_pasajeros=1):
+    """Normaliza `destinations` de Google Travel Explore para la pantalla Buscar."""
+    rows = []
+    num_pasajeros = max(1, int(num_pasajeros or 1))
+
+    for item_idx, d in enumerate(result.get("destinations", []) or []):
+        airport = d.get("destination_airport", {}) or {}
+        price = pd.to_numeric(d.get("flight_price"), errors="coerce")
+        destination_id = d.get("destination_id") or airport.get("code") or ""
+        airport_code = airport.get("code", "")
+
+        rows.append({
+            "_row_id": item_idx,
+            "Destino": d.get("name", ""),
+            "País": d.get("country", ""),
+            "Aeropuerto": airport_code,
+            "Fecha Ida": d.get("start_date", ""),
+            "Fecha Vuelta": d.get("end_date", ""),
+            "Precio_Num": price,
+            "Precio": f"{int(round(price))} €" if pd.notna(price) else "N/A",
+            "Precio/persona": f"{price / num_pasajeros:.2f} €" if pd.notna(price) else "N/A",
+            "Duración": fmt_minutes(d.get("flight_duration")),
+            "Escalas": (
+                "Directo" if d.get("number_of_stops") == 0
+                else f"{d.get('number_of_stops')} escala(s)" if d.get("number_of_stops") is not None
+                else "N/A"
+            ),
+            "Aerolínea": d.get("airline", ""),
+            "_arrival_id": destination_id,
+            "_arrival_airport": airport_code,
+            "_lat": (d.get("gps_coordinates") or {}).get("latitude"),
+            "_lon": (d.get("gps_coordinates") or {}).get("longitude"),
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["Precio_Num"] = pd.to_numeric(df["Precio_Num"], errors="coerce")
+    return df.sort_values(["Precio_Num", "Destino"], na_position="last").reset_index(drop=True)
+
+
+def anywhere_destination_label(row):
+    aeropuerto = f" ({row.get('Aeropuerto')})" if row.get("Aeropuerto") else ""
+    return (
+        f"{row.get('Destino', '')}{aeropuerto} · "
+        f"{row.get('Precio', 'N/A')} total · {row.get('Precio/persona', 'N/A')} por persona"
+    )
 
 # ============================================================
 # MODO Y CONSUMO API
@@ -1423,8 +1595,8 @@ if modo == "🔎 Buscar vuelos":
 
     if destino_anywhere:
         st.sidebar.caption(
-            "🌍 Cualquier lugar: Google Flights decidirá los destinos. En ida y vuelta, "
-            "la vuelta será desde el destino elegido hacia tu origen."
+            "🌍 Cualquier lugar: la primera consulta usa Google Travel Explore para descubrir destinos. "
+            "Después podrás abrir uno y consultar sus vuelos concretos en Google Flights."
         )
     else:
         st.sidebar.caption(
@@ -1523,17 +1695,28 @@ if modo == "🔎 Buscar vuelos":
         value=True,
         help="Activa show_hidden + deep_search para aproximarse a los resultados del navegador.",
     )
-    flex_ida = col_flex_i.checkbox("Flex. ida", value=False)
+    flex_ida = col_flex_i.checkbox(
+        "Flex. ida",
+        value=False,
+        disabled=destino_anywhere,
+        help="Para 'Cualquier lugar' se usan las fechas elegidas directamente en Google Travel Explore." if destino_anywhere else None,
+    )
+    if destino_anywhere:
+        flex_ida = False
 
     # Fechas flexibles de vuelta: casilla SIEMPRE visible (no desaparece),
     # simplemente se deshabilita si no hay "Ida y vuelta" activado.
     flex_vuelta = st.sidebar.checkbox(
         "Fechas flexibles de vuelta",
         value=False,
-        disabled=not buscar_vuelta,
-        help=None if buscar_vuelta else "Actívala marcando antes 'Ida y vuelta'.",
+        disabled=(not buscar_vuelta) or destino_anywhere,
+        help=(
+            "Para 'Cualquier lugar' se usan las fechas elegidas directamente en Google Travel Explore."
+            if destino_anywhere
+            else (None if buscar_vuelta else "Actívala marcando antes 'Ida y vuelta'.")
+        ),
     )
-    if not buscar_vuelta:
+    if (not buscar_vuelta) or destino_anywhere:
         flex_vuelta = False
 
     radio_ida = st.sidebar.slider("Días de margen (ida)", min_value=1, max_value=5, value=3) if flex_ida else 0
@@ -1679,7 +1862,10 @@ if modo == "🔎 Buscar vuelos":
                 )
             )
 
-            params = build_flight_params(
+            # Plantilla de Google Flights para abrir después un destino concreto.
+            # Conserva todos los filtros que Google Travel Explore no admite
+            # (horas, duración de escala, conexiones excluidas, orden, deep_search...).
+            detail_params = build_flight_params(
                 origin=orig_query,
                 destination=dest_query,
                 outbound_date=fecha_ida,
@@ -1704,14 +1890,38 @@ if modo == "🔎 Buscar vuelos":
                 exhaustive=busqueda_exhaustiva,
             )
 
+            if destino_anywhere:
+                params = build_anywhere_params(
+                    origin=orig_query,
+                    outbound_date=fecha_ida,
+                    return_date=fecha_vuelta if buscar_vuelta else None,
+                    travel_class=CABIN_CLASSES[clase_sel],
+                    adults=adultos,
+                    children=ninos,
+                    infants_seat=bebes_asiento,
+                    infants_lap=bebes_regazo,
+                    bags=equipajes_mano,
+                    stops=STOPS_OPTIONS[escalas_sel],
+                    include_airlines=incluir_aerolineas,
+                    exclude_airlines=excluir_aerolineas,
+                    max_price=precio_max,
+                    max_duration_hours=duracion_max,
+                )
+            else:
+                params = detail_params
+
             try:
-                with st.status("Buscando tarifas...", expanded=True) as status:
+                with st.status("Buscando destinos..." if destino_anywhere else "Buscando tarifas...", expanded=True) as status:
                     result = serp_search(params)
-                    df = vuelos_a_df(result, num_pasajeros=int(adultos + ninos))
+                    if destino_anywhere:
+                        df = destinos_anywhere_a_df(result, num_pasajeros=int(adultos + ninos))
+                    else:
+                        df = vuelos_a_df(result, num_pasajeros=int(adultos + ninos))
                     status.update(label="¡Búsqueda completada!", state="complete", expanded=False)
 
                 st.session_state["flight_search"] = {
                     "params": params,
+                    "detail_params": detail_params,
                     "result": result,
                     "df": df,
                     "origin": origen,
@@ -1731,8 +1941,9 @@ if modo == "🔎 Buscar vuelos":
                     "radius_vuelta": radio_vuelta,
                 }
                 st.session_state.pop("return_search", None)
+                st.session_state.pop("anywhere_detail", None)
 
-                if not df.empty and df["Precio_Num"].notna().any():
+                if not df.empty and "Precio_Num" in df.columns and df["Precio_Num"].notna().any():
                     guardar_precio(
                         origen,
                         ANYWHERE_STORAGE_KEY if destino_anywhere else destino,
@@ -1748,205 +1959,442 @@ if modo == "🔎 Buscar vuelos":
 
     search_state = st.session_state.get("flight_search")
     if search_state:
-        df = search_state["df"]
-        result = search_state["result"]
-        params = search_state["params"]
-        is_roundtrip = search_state["return_date"] is not None
+        if search_state.get("destination_anywhere"):
+            df = search_state["df"]
+            result = search_state["result"]
+            is_roundtrip = search_state["return_date"] is not None
+            pasajeros = max(1, int(search_state.get("passengers", 1)))
 
-        st.markdown("---")
-        if is_roundtrip:
-            st.subheader("🛫 Selecciona la ida")
+            st.markdown("---")
+            st.subheader("🌍 Destinos para ‘Cualquier lugar’")
             st.caption(
-                "Búsqueda round-trip real. Tras seleccionar la ida se consultan las vueltas compatibles mediante departure_token."
+                "Esta primera consulta usa Google Travel Explore para descubrir destinos sin `arrival_id`. "
+                "Selecciona uno y la app abrirá Google Flights para ver los vuelos concretos."
             )
-        else:
-            st.subheader("🛫 Resultados")
 
-        mostrar_df_vuelos(df)
+            if df.empty:
+                st.warning("Google Travel Explore no devolvió destinos con estos filtros y fechas.")
+            else:
+                visible_cols = [
+                    "Destino", "País", "Aeropuerto", "Fecha Ida", "Fecha Vuelta",
+                    "Precio", "Precio/persona", "Duración", "Escalas", "Aerolínea",
+                ]
+                visible_cols = [c for c in visible_cols if c in df.columns]
+                st.dataframe(df[visible_cols], hide_index=True, use_container_width=True)
 
-        if not df.empty and df["Precio_Num"].notna().any():
-            min_price = df["Precio_Num"].min()
-            min_pp = min_price / max(1, int(search_state.get("passengers", 1)))
-            c_precio_total, c_precio_pp = st.columns(2)
-            c_precio_total.metric("💰 Mejor precio agregado", f"{int(round(min_price))} €")
-            c_precio_pp.metric("👤 Mejor precio por persona", f"{int(round(min_pp))} €")
+                if df["Precio_Num"].notna().any():
+                    min_price = float(df["Precio_Num"].min())
+                    min_pp = min_price / pasajeros
+                    c1, c2 = st.columns(2)
+                    c1.metric("💰 Mejor precio agregado encontrado", f"{min_price:.0f} €")
+                    c2.metric("👤 Mejor precio por persona", f"{min_pp:.0f} €")
 
-            triggered = alertas_activadas(
+                    triggered = alertas_activadas(
+                        search_state["origin"],
+                        search_state["destination"],
+                        search_state["outbound_date"],
+                        search_state["return_date"],
+                        min_price,
+                    )
+                    if not triggered.empty:
+                        thresholds = ", ".join(f"{int(x)} €" for x in triggered["max_price"])
+                        st.success(
+                            f"🔔 Alerta alcanzada para ‘Cualquier lugar’. "
+                            f"Mejor precio actual: {int(min_price)} €. Umbrales: {thresholds}."
+                        )
+
+                st.markdown("### ✈️ Abrir un destino")
+                selected_destination_idx = st.selectbox(
+                    "Destino seleccionado",
+                    options=list(df.index),
+                    format_func=lambda i: anywhere_destination_label(df.loc[i]),
+                    key="anywhere_destination_select",
+                )
+                selected_destination = df.loc[selected_destination_idx]
+                selected_arrival_id = selected_destination.get("_arrival_id", "")
+
+                if not selected_arrival_id:
+                    st.warning("Este resultado no incluye un identificador de destino utilizable en Google Flights.")
+                elif st.button("✈️ Ver vuelos a este destino", type="primary", key="open_anywhere_destination"):
+                    detail_params = dict(search_state.get("detail_params") or {})
+                    if not detail_params:
+                        detail_params = detalle_flights_desde_explore(search_state.get("params", {}))
+                    detail_params["arrival_id"] = selected_arrival_id
+                    try:
+                        with st.spinner(f"Buscando vuelos a {selected_destination.get('Destino', '')}..."):
+                            detail_result = serp_search(detail_params)
+                            detail_df = vuelos_a_df(detail_result, num_pasajeros=pasajeros)
+                        st.session_state["anywhere_detail"] = {
+                            "arrival_id": selected_arrival_id,
+                            "destination_name": selected_destination.get("Destino", ""),
+                            "params": detail_params,
+                            "result": detail_result,
+                            "df": detail_df,
+                        }
+                        st.session_state.pop("return_search", None)
+                    except Exception as exc:
+                        st.error(f"No se pudieron abrir los vuelos de ese destino: {exc}")
+                        st.session_state.pop("anywhere_detail", None)
+
+                detail_state = st.session_state.get("anywhere_detail")
+                if detail_state and detail_state.get("arrival_id") == selected_arrival_id:
+                    detail_df = detail_state["df"]
+                    detail_result = detail_state["result"]
+                    detail_params = detail_state["params"]
+
+                    st.markdown(f"### 🛫 Vuelos a {detail_state.get('destination_name', '')}")
+                    mostrar_df_vuelos(detail_df)
+                    mostrar_price_insights(detail_result)
+
+                    if not detail_df.empty and detail_df["Precio_Num"].notna().any():
+                        pmin = float(detail_df["Precio_Num"].min())
+                        c1, c2 = st.columns(2)
+                        c1.metric("💰 Mejor tarifa de la ruta", f"{pmin:.0f} €")
+                        c2.metric("👤 Por persona", f"{pmin / pasajeros:.0f} €")
+
+                    if not is_roundtrip and not detail_df.empty:
+                        selectable = [idx for idx in detail_df.index if pd.notna(detail_df.loc[idx, "Precio_Num"])]
+                        if selectable:
+                            selected_idx = st.selectbox(
+                                "Selecciona un vuelo",
+                                options=selectable,
+                                format_func=lambda i: flight_label(detail_df.loc[i]),
+                                key="anywhere_oneway_booking_select",
+                            )
+                            mostrar_booking_options(
+                                detail_df.loc[selected_idx, "_booking_token"],
+                                key_prefix=f"anywhere_oneway_{selected_idx}",
+                                num_pasajeros=pasajeros,
+                            )
+
+                    if is_roundtrip and not detail_df.empty:
+                        valid_outbound = [idx for idx in detail_df.index if detail_df.loc[idx, "_departure_token"]]
+                        if not valid_outbound:
+                            st.warning("Google no devolvió `departure_token` para las idas de este destino.")
+                        else:
+                            selected_outbound_idx = st.selectbox(
+                                "Ida seleccionada",
+                                options=valid_outbound,
+                                format_func=lambda i: flight_label(detail_df.loc[i]),
+                                key="anywhere_roundtrip_outbound_select",
+                            )
+                            selected_departure_token = detail_df.loc[selected_outbound_idx, "_departure_token"]
+
+                            if st.button("🔁 Ver vueltas compatibles", type="primary", key="anywhere_load_returns"):
+                                return_params = dict(detail_params)
+                                return_params["departure_token"] = selected_departure_token
+                                try:
+                                    with st.spinner("Buscando vueltas compatibles..."):
+                                        return_result = serp_search(return_params)
+                                        return_df = vuelos_a_df(return_result, num_pasajeros=pasajeros)
+                                    st.session_state["return_search"] = {
+                                        "departure_token": selected_departure_token,
+                                        "scope": "anywhere",
+                                        "result": return_result,
+                                        "df": return_df,
+                                    }
+                                except Exception as exc:
+                                    st.error(f"No se pudieron recuperar las vueltas: {exc}")
+                                    st.session_state.pop("return_search", None)
+
+                            return_state = st.session_state.get("return_search")
+                            if (
+                                return_state
+                                and return_state.get("scope") == "anywhere"
+                                and return_state.get("departure_token") == selected_departure_token
+                            ):
+                                return_df = return_state["df"]
+                                st.markdown("### 🛬 Vueltas compatibles")
+                                mostrar_df_vuelos(return_df)
+
+                                selectable_returns = [
+                                    idx for idx in return_df.index
+                                    if pd.notna(return_df.loc[idx, "Precio_Num"])
+                                ]
+                                if selectable_returns:
+                                    selected_return_idx = st.selectbox(
+                                        "Selecciona la combinación de vuelta",
+                                        options=selectable_returns,
+                                        format_func=lambda i: flight_label(return_df.loc[i]),
+                                        key="anywhere_roundtrip_return_select",
+                                    )
+                                    selected_row = return_df.loc[selected_return_idx]
+                                    selected_outbound_row = detail_df.loc[selected_outbound_idx]
+
+                                    if pd.notna(selected_row["Precio_Num"]):
+                                        total_comb = float(selected_row["Precio_Num"])
+                                        c_total, c_pp = st.columns(2)
+                                        c_total.metric("💰 Precio total de la combinación", f"{total_comb:.0f} €")
+                                        c_pp.metric("👤 Precio por persona", f"{total_comb / pasajeros:.0f} €")
+
+                                    mostrar_resumen_precios_trayectos(
+                                        detail_params,
+                                        selected_outbound_row,
+                                        selected_row,
+                                        pasajeros,
+                                    )
+                                    mostrar_booking_options(
+                                        selected_row["_booking_token"],
+                                        key_prefix=f"anywhere_roundtrip_{selected_return_idx}",
+                                        num_pasajeros=pasajeros,
+                                    )
+
+            st.markdown("### 📈 Histórico local")
+            hist = obtener_historico(
                 search_state["origin"],
                 search_state["destination"],
                 search_state["outbound_date"],
                 search_state["return_date"],
-                min_price,
             )
-            if not triggered.empty:
-                thresholds = ", ".join(f"{int(x)} €" for x in triggered["max_price"])
-                st.success(f"🔔 Alerta alcanzada. Precio actual: {int(min_price)} €. Umbrales: {thresholds}.")
+            if hist.empty:
+                st.caption("Aún no hay histórico suficiente para esta búsqueda abierta.")
+            else:
+                st.caption("El histórico representa el destino más barato encontrado en cada ejecución de ‘Cualquier lugar’.")
+                st.line_chart(hist.set_index("timestamp")[["price"]])
 
-        mostrar_price_insights(result)
-
-        if search_state.get("flexible_ida") or search_state.get("flexible_vuelta"):
-            st.markdown("### 📅 Fechas flexibles (Matriz de precios)")
-            st.caption("Compara cruces de fechas para encontrar la combinación más barata.")
-            try:
-                base_params_json = json.dumps(params, sort_keys=True, separators=(",", ":"))
-                with st.spinner(f"Construyendo matriz (hasta {coste_estimado} comprobaciones)..."):
-                    cal_df = obtener_calendario_precios(
-                        base_params_json,
-                        search_state["radius_ida"],
-                        search_state["radius_vuelta"]
-                    )
-                if cal_df.empty:
-                    st.info("No se han podido obtener precios para fechas cercanas.")
-                else:
-                    # Si ambos están activos, dibuja una matriz (pivot table)
-                    if search_state["radius_ida"] > 0 and search_state["radius_vuelta"] > 0 and search_state["return_date"]:
-                        matriz = cal_df.pivot(index="Fecha ida", columns="Fecha vuelta", values="Precio mínimo (€)")
-                        st.dataframe(matriz, use_container_width=True)
-                    # Si solo uno es flexible, dibuja la gráfica lineal
+            with st.expander("⭐ Guardar esta configuración de búsqueda"):
+                st.caption(
+                    "Guarda la configuración de ‘Cualquier lugar’. Al repetirla se volverán a descubrir "
+                    "los destinos y precios disponibles para esas fechas."
+                )
+                default_name = f"{search_state.get('origin', '')} → Cualquier lugar"
+                nombre_guardado = st.text_input(
+                    "Nombre",
+                    value=default_name,
+                    key="saved_search_name_anywhere",
+                )
+                if st.button("💾 Guardar configuración", key="save_current_search_config_anywhere"):
+                    config_guardable = construir_config_guardable(search_state)
+                    if guardar_busqueda(nombre_guardado, config_guardable):
+                        st.success("Configuración guardada.")
                     else:
-                        st.dataframe(cal_df, hide_index=True, use_container_width=True)
-                        eje_x = "Fecha ida" if search_state["radius_ida"] > 0 else "Fecha vuelta"
-                        st.line_chart(cal_df.set_index(eje_x)[["Precio mínimo (€)"]])
-            except Exception as exc:
-                st.warning(f"No se pudo construir la matriz de precios: {exc}")
+                        st.error("No se pudo guardar la configuración.")
 
-        st.markdown("### 📈 Histórico local")
-        hist = obtener_historico(
-            search_state["origin"],
-            search_state["destination"],
-            search_state["outbound_date"],
-            search_state["return_date"],
-        )
-        if hist.empty:
-            st.caption("Aún no hay histórico suficiente para esta búsqueda.")
+            with st.expander("🔔 Crear alerta de precio"):
+                st.caption("La alerta se compara con el destino más barato encontrado en la búsqueda abierta.")
+                default_alert = 50
+                if not df.empty and df["Precio_Num"].notna().any():
+                    default_alert = max(1, int(df["Precio_Num"].min() * 0.9))
+                umbral = st.number_input(
+                    "Avísame si aparece algún destino por debajo de (€)",
+                    min_value=1,
+                    max_value=10000,
+                    value=default_alert,
+                    key="alert_threshold_anywhere",
+                )
+                if st.button("Guardar alerta", key="save_alert_anywhere"):
+                    ok = crear_alerta(
+                        search_state["origin"],
+                        search_state["destination"],
+                        search_state["outbound_date"],
+                        search_state["return_date"],
+                        umbral,
+                    )
+                    if ok:
+                        st.success("Alerta guardada.")
+                    else:
+                        st.error("No se pudo guardar la alerta.")
+
         else:
-            st.line_chart(hist.set_index("timestamp")[["price"]])
+            df = search_state["df"]
+            result = search_state["result"]
+            params = search_state["params"]
+            is_roundtrip = search_state["return_date"] is not None
 
-        with st.expander("⭐ Guardar esta configuración de búsqueda"):
-            st.caption(
-                "Guarda los parámetros, no los resultados. Al repetirla se vuelve a consultar SerpApi "
-                "y el nuevo precio se añade al histórico local."
-            )
-            default_name_dest = "Cualquier lugar" if search_state.get("destination_anywhere") else search_state.get("destination", "")
-            default_name = f"{search_state.get('origin', '')} → {default_name_dest}"
-            nombre_guardado = st.text_input(
-                "Nombre",
-                value=default_name,
-                key="saved_search_name",
-            )
-            if st.button("💾 Guardar configuración", key="save_current_search_config"):
-                config_guardable = construir_config_guardable(search_state)
-                if guardar_busqueda(nombre_guardado, config_guardable):
-                    st.success("Configuración guardada. Ya aparecerá en 'Búsquedas guardadas' del menú lateral.")
-                else:
-                    st.error("No se pudo guardar la configuración. Comprueba el nombre y el almacenamiento local.")
+            st.markdown("---")
+            if is_roundtrip:
+                st.subheader("🛫 Selecciona la ida")
+                st.caption(
+                    "Búsqueda round-trip real. Tras seleccionar la ida se consultan las vueltas compatibles mediante departure_token."
+                )
+            else:
+                st.subheader("🛫 Resultados")
 
-        with st.expander("🔔 Crear alerta de precio"):
-            st.caption(
-                "La alerta se guarda localmente y se comprueba al ejecutar la app/búsqueda. Para email o push en segundo plano hace falta un job externo."
-            )
-            default_alert = 50
+            mostrar_df_vuelos(df)
+
             if not df.empty and df["Precio_Num"].notna().any():
-                default_alert = max(1, int(df["Precio_Num"].min() * 0.9))
-            umbral = st.number_input("Avísame si el precio baja a (€)", min_value=1, max_value=10000, value=default_alert, key="alert_threshold")
-            if st.button("Guardar alerta", key="save_alert"):
-                ok = crear_alerta(
+                min_price = df["Precio_Num"].min()
+                min_pp = min_price / max(1, int(search_state.get("passengers", 1)))
+                c_precio_total, c_precio_pp = st.columns(2)
+                c_precio_total.metric("💰 Mejor precio agregado", f"{int(round(min_price))} €")
+                c_precio_pp.metric("👤 Mejor precio por persona", f"{int(round(min_pp))} €")
+
+                triggered = alertas_activadas(
                     search_state["origin"],
                     search_state["destination"],
                     search_state["outbound_date"],
                     search_state["return_date"],
-                    umbral,
+                    min_price,
                 )
-                if ok:
-                    st.success("Alerta guardada.")
-                else:
-                    st.error("No se pudo guardar la alerta.")
+                if not triggered.empty:
+                    thresholds = ", ".join(f"{int(x)} €" for x in triggered["max_price"])
+                    st.success(f"🔔 Alerta alcanzada. Precio actual: {int(min_price)} €. Umbrales: {thresholds}.")
 
-        if not is_roundtrip and not df.empty:
-            st.markdown("### 🧳 Precio final y equipaje")
-            selectable = [idx for idx in df.index if pd.notna(df.loc[idx, "Precio_Num"])]
-            if selectable:
-                selected_idx = st.selectbox(
-                    "Selecciona un vuelo",
-                    options=selectable,
-                    format_func=lambda i: flight_label(df.loc[i]),
-                    key="oneway_booking_select",
-                )
-                mostrar_booking_options(
-                    df.loc[selected_idx, "_booking_token"],
-                    key_prefix=f"oneway_{selected_idx}",
-                    num_pasajeros=search_state.get("passengers", 1),
-                )
+            mostrar_price_insights(result)
 
-        if is_roundtrip and not df.empty:
-            valid_outbound = [idx for idx in df.index if df.loc[idx, "_departure_token"]]
-            if not valid_outbound:
-                st.warning("Google no devolvió `departure_token` para las idas encontradas.")
+            if search_state.get("flexible_ida") or search_state.get("flexible_vuelta"):
+                st.markdown("### 📅 Fechas flexibles (Matriz de precios)")
+                st.caption("Compara cruces de fechas para encontrar la combinación más barata.")
+                try:
+                    base_params_json = json.dumps(params, sort_keys=True, separators=(",", ":"))
+                    with st.spinner(f"Construyendo matriz (hasta {coste_estimado} comprobaciones)..."):
+                        cal_df = obtener_calendario_precios(
+                            base_params_json,
+                            search_state["radius_ida"],
+                            search_state["radius_vuelta"]
+                        )
+                    if cal_df.empty:
+                        st.info("No se han podido obtener precios para fechas cercanas.")
+                    else:
+                        # Si ambos están activos, dibuja una matriz (pivot table)
+                        if search_state["radius_ida"] > 0 and search_state["radius_vuelta"] > 0 and search_state["return_date"]:
+                            matriz = cal_df.pivot(index="Fecha ida", columns="Fecha vuelta", values="Precio mínimo (€)")
+                            st.dataframe(matriz, use_container_width=True)
+                        # Si solo uno es flexible, dibuja la gráfica lineal
+                        else:
+                            st.dataframe(cal_df, hide_index=True, use_container_width=True)
+                            eje_x = "Fecha ida" if search_state["radius_ida"] > 0 else "Fecha vuelta"
+                            st.line_chart(cal_df.set_index(eje_x)[["Precio mínimo (€)"]])
+                except Exception as exc:
+                    st.warning(f"No se pudo construir la matriz de precios: {exc}")
+
+            st.markdown("### 📈 Histórico local")
+            hist = obtener_historico(
+                search_state["origin"],
+                search_state["destination"],
+                search_state["outbound_date"],
+                search_state["return_date"],
+            )
+            if hist.empty:
+                st.caption("Aún no hay histórico suficiente para esta búsqueda.")
             else:
-                selected_outbound_idx = st.selectbox(
-                    "Ida seleccionada",
-                    options=valid_outbound,
-                    format_func=lambda i: flight_label(df.loc[i]),
-                    key="roundtrip_outbound_select",
+                st.line_chart(hist.set_index("timestamp")[["price"]])
+
+            with st.expander("⭐ Guardar esta configuración de búsqueda"):
+                st.caption(
+                    "Guarda los parámetros, no los resultados. Al repetirla se vuelve a consultar SerpApi "
+                    "y el nuevo precio se añade al histórico local."
                 )
-                selected_departure_token = df.loc[selected_outbound_idx, "_departure_token"]
+                default_name_dest = "Cualquier lugar" if search_state.get("destination_anywhere") else search_state.get("destination", "")
+                default_name = f"{search_state.get('origin', '')} → {default_name_dest}"
+                nombre_guardado = st.text_input(
+                    "Nombre",
+                    value=default_name,
+                    key="saved_search_name",
+                )
+                if st.button("💾 Guardar configuración", key="save_current_search_config"):
+                    config_guardable = construir_config_guardable(search_state)
+                    if guardar_busqueda(nombre_guardado, config_guardable):
+                        st.success("Configuración guardada. Ya aparecerá en 'Búsquedas guardadas' del menú lateral.")
+                    else:
+                        st.error("No se pudo guardar la configuración. Comprueba el nombre y el almacenamiento local.")
 
-                if st.button("🔁 Ver vueltas compatibles", type="primary", key="load_returns"):
-                    return_params = dict(params)
-                    return_params["departure_token"] = selected_departure_token
-                    try:
-                        with st.spinner("Buscando vueltas compatibles..."):
-                            return_result = serp_search(return_params)
-                            return_df = vuelos_a_df(return_result, num_pasajeros=search_state.get("passengers", 1))
-                        st.session_state["return_search"] = {
-                            "departure_token": selected_departure_token,
-                            "result": return_result,
-                            "df": return_df,
-                        }
-                    except Exception as exc:
-                        st.error(f"No se pudieron recuperar las vueltas: {exc}")
-                        st.session_state.pop("return_search", None)
+            with st.expander("🔔 Crear alerta de precio"):
+                st.caption(
+                    "La alerta se guarda localmente y se comprueba al ejecutar la app/búsqueda. Para email o push en segundo plano hace falta un job externo."
+                )
+                default_alert = 50
+                if not df.empty and df["Precio_Num"].notna().any():
+                    default_alert = max(1, int(df["Precio_Num"].min() * 0.9))
+                umbral = st.number_input("Avísame si el precio baja a (€)", min_value=1, max_value=10000, value=default_alert, key="alert_threshold")
+                if st.button("Guardar alerta", key="save_alert"):
+                    ok = crear_alerta(
+                        search_state["origin"],
+                        search_state["destination"],
+                        search_state["outbound_date"],
+                        search_state["return_date"],
+                        umbral,
+                    )
+                    if ok:
+                        st.success("Alerta guardada.")
+                    else:
+                        st.error("No se pudo guardar la alerta.")
 
-                return_state = st.session_state.get("return_search")
-                if return_state and return_state.get("departure_token") == selected_departure_token:
-                    return_df = return_state["df"]
-                    st.markdown("### 🛬 Vueltas compatibles")
-                    mostrar_df_vuelos(return_df)
+            if not is_roundtrip and not df.empty:
+                st.markdown("### 🧳 Precio final y equipaje")
+                selectable = [idx for idx in df.index if pd.notna(df.loc[idx, "Precio_Num"])]
+                if selectable:
+                    selected_idx = st.selectbox(
+                        "Selecciona un vuelo",
+                        options=selectable,
+                        format_func=lambda i: flight_label(df.loc[i]),
+                        key="oneway_booking_select",
+                    )
+                    mostrar_booking_options(
+                        df.loc[selected_idx, "_booking_token"],
+                        key_prefix=f"oneway_{selected_idx}",
+                        num_pasajeros=search_state.get("passengers", 1),
+                    )
 
-                    if not return_df.empty:
-                        selectable_returns = [idx for idx in return_df.index if pd.notna(return_df.loc[idx, "Precio_Num"])]
-                        if selectable_returns:
-                            selected_return_idx = st.selectbox(
-                                "Selecciona la combinación de vuelta",
-                                options=selectable_returns,
-                                format_func=lambda i: flight_label(return_df.loc[i]),
-                                key="roundtrip_return_select",
-                            )
-                            selected_row = return_df.loc[selected_return_idx]
-                            selected_outbound_row = df.loc[selected_outbound_idx]
+            if is_roundtrip and not df.empty:
+                valid_outbound = [idx for idx in df.index if df.loc[idx, "_departure_token"]]
+                if not valid_outbound:
+                    st.warning("Google no devolvió `departure_token` para las idas encontradas.")
+                else:
+                    selected_outbound_idx = st.selectbox(
+                        "Ida seleccionada",
+                        options=valid_outbound,
+                        format_func=lambda i: flight_label(df.loc[i]),
+                        key="roundtrip_outbound_select",
+                    )
+                    selected_departure_token = df.loc[selected_outbound_idx, "_departure_token"]
 
-                            if pd.notna(selected_row["Precio_Num"]):
-                                total_comb = float(selected_row["Precio_Num"])
-                                pp_comb = total_comb / max(1, int(search_state.get("passengers", 1)))
-                                c_total, c_pp = st.columns(2)
-                                c_total.metric("💰 Precio total de la combinación", f"{total_comb:.0f} €")
-                                c_pp.metric("👤 Precio por persona", f"{pp_comb:.0f} €")
+                    if st.button("🔁 Ver vueltas compatibles", type="primary", key="load_returns"):
+                        return_params = dict(params)
+                        return_params["departure_token"] = selected_departure_token
+                        try:
+                            with st.spinner("Buscando vueltas compatibles..."):
+                                return_result = serp_search(return_params)
+                                return_df = vuelos_a_df(return_result, num_pasajeros=search_state.get("passengers", 1))
+                            st.session_state["return_search"] = {
+                                "departure_token": selected_departure_token,
+                                "result": return_result,
+                                "df": return_df,
+                            }
+                        except Exception as exc:
+                            st.error(f"No se pudieron recuperar las vueltas: {exc}")
+                            st.session_state.pop("return_search", None)
 
-                            # Desglose económico por trayecto. Estas dos consultas one-way
-                            # quedan cacheadas por serp_search, por lo que no se repiten
-                            # mientras los parámetros sean idénticos.
-                            mostrar_resumen_precios_trayectos(
-                                params,
-                                selected_outbound_row,
-                                selected_row,
-                                search_state.get("passengers", 1),
-                            )
+                    return_state = st.session_state.get("return_search")
+                    if return_state and return_state.get("departure_token") == selected_departure_token:
+                        return_df = return_state["df"]
+                        st.markdown("### 🛬 Vueltas compatibles")
+                        mostrar_df_vuelos(return_df)
 
-                            mostrar_booking_options(
-                                selected_row["_booking_token"],
-                                key_prefix=f"roundtrip_{selected_return_idx}",
-                                num_pasajeros=search_state.get("passengers", 1),
-                            )
+                        if not return_df.empty:
+                            selectable_returns = [idx for idx in return_df.index if pd.notna(return_df.loc[idx, "Precio_Num"])]
+                            if selectable_returns:
+                                selected_return_idx = st.selectbox(
+                                    "Selecciona la combinación de vuelta",
+                                    options=selectable_returns,
+                                    format_func=lambda i: flight_label(return_df.loc[i]),
+                                    key="roundtrip_return_select",
+                                )
+                                selected_row = return_df.loc[selected_return_idx]
+                                selected_outbound_row = df.loc[selected_outbound_idx]
+
+                                if pd.notna(selected_row["Precio_Num"]):
+                                    total_comb = float(selected_row["Precio_Num"])
+                                    pp_comb = total_comb / max(1, int(search_state.get("passengers", 1)))
+                                    c_total, c_pp = st.columns(2)
+                                    c_total.metric("💰 Precio total de la combinación", f"{total_comb:.0f} €")
+                                    c_pp.metric("👤 Precio por persona", f"{pp_comb:.0f} €")
+
+                                # Desglose económico por trayecto. Estas dos consultas one-way
+                                # quedan cacheadas por serp_search, por lo que no se repiten
+                                # mientras los parámetros sean idénticos.
+                                mostrar_resumen_precios_trayectos(
+                                    params,
+                                    selected_outbound_row,
+                                    selected_row,
+                                    search_state.get("passengers", 1),
+                                )
+
+                                mostrar_booking_options(
+                                    selected_row["_booking_token"],
+                                    key_prefix=f"roundtrip_{selected_return_idx}",
+                                    num_pasajeros=search_state.get("passengers", 1),
+                                )
 
 # ============================================================
 # MODO 2: INSPIRAME

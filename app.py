@@ -2090,23 +2090,23 @@ if modo == "🔎 Buscar vuelos":
             if df["Precio_Num"].notna().any():
                 min_price = float(df["Precio_Num"].min())
                 min_pp = min_price / pasajeros
-                    c1, c2 = st.columns(2)
-                    c1.metric("💰 Mejor precio agregado encontrado", f"{min_price:.0f} €")
-                    c2.metric("👤 Mejor precio por persona", f"{min_pp:.0f} €")
+                c1, c2 = st.columns(2)
+                c1.metric("💰 Mejor precio agregado encontrado", f"{min_price:.0f} €")
+                c2.metric("👤 Mejor precio por persona", f"{min_pp:.0f} €")
 
-                    triggered = alertas_activadas(
-                        search_state["origin"],
-                        search_state["destination"],
-                        search_state["outbound_date"],
-                        search_state["return_date"],
-                        min_price,
+                triggered = alertas_activadas(
+                    search_state["origin"],
+                    search_state["destination"],
+                    search_state["outbound_date"],
+                    search_state["return_date"],
+                    min_price,
+                )
+                if not triggered.empty:
+                    thresholds = ", ".join(f"{int(x)} €" for x in triggered["max_price"])
+                    st.success(
+                        f"🔔 Alerta alcanzada para ‘Cualquier lugar’. "
+                        f"Mejor precio actual: {int(min_price)} €. Umbrales: {thresholds}."
                     )
-                    if not triggered.empty:
-                        thresholds = ", ".join(f"{int(x)} €" for x in triggered["max_price"])
-                        st.success(
-                            f"🔔 Alerta alcanzada para ‘Cualquier lugar’. "
-                            f"Mejor precio actual: {int(min_price)} €. Umbrales: {thresholds}."
-                        )
 
                 # ------------------------------------------------------------
                 # UNA SOLA CONSULTA: mostrar TODAS las alternativas devueltas
